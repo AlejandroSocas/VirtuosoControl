@@ -245,29 +245,40 @@ class VirtuosoController:
         if not self._ensure_handshake():
             return "Error de handshake"
 
-        self._flush_buffer()
-        self._send_v2w(EP_HEADSET, CMD_SET, [0x0f])
-        
-        # Bucle para leer varios paquetes, ya que a veces llegan respuestas
-        # de heartbeat o paquetes vacíos antes que la respuesta de batería real.
-        for _ in range(5):
-            time.sleep(0.1)
-            try:
-                res = self.device.read(64)
-            except Exception:
-                self._connected = False
-                return "Error de lectura"
+        valid_percents = []
+        last_status = "Descargando"
 
-            if res and len(res) > 5:
-                raw_val = (res[5] << 8) | res[4]
-                # Si es 0 exacto, suele ser un paquete de otra cosa o un dummy
-                if raw_val == 0:
-                    continue
+        # Hacemos la comprobación 3 veces seguidas. 
+        # A veces el primer paquete tras un tiempo de inactividad 
+        # devuelve un falso 100% o basura. Tomaremos el último valor.
+        for _ in range(3):
+            self._flush_buffer()
+            self._send_v2w(EP_HEADSET, CMD_SET, [0x0f])
+            
+            for _ in range(5):
+                time.sleep(0.05)
+                try:
+                    res = self.device.read(64)
+                except Exception:
+                    self._connected = False
+                    return "Error de lectura"
+
+                if res and len(res) > 5:
+                    raw_val = (res[5] << 8) | res[4]
+                    if raw_val == 0:
+                        continue
+                        
+                    percent = min(raw_val // 10, 100)
+                    status_byte = res[3]
+                    status = "Cargando" if status_byte in [4, 5] else "Descargando"
                     
-                percent = min(raw_val // 10, 100)
-                status_byte = res[3]
-                status = "Cargando" if status_byte in [4, 5] else "Descargando"
-                return f"{percent}% [{status}]"
+                    valid_percents.append(percent)
+                    last_status = status
+                    break
+        
+        if valid_percents:
+            # Devolvemos la última lectura, que es la más estable
+            return f"{valid_percents[-1]}% [{last_status}]"
                 
         return "Sin respuesta (inténtalo de nuevo)"
 
