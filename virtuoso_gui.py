@@ -17,11 +17,65 @@ import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
                              QGroupBox, QSystemTrayIcon, QMenu, QCheckBox,
-                             QRadioButton, QButtonGroup, QColorDialog)
+                             QRadioButton, QButtonGroup, QColorDialog, QDialog)
 from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QAction, QColor
 from virtuoso_control import VirtuosoController
 
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ajustes")
+        self.setFixedSize(300, 150)
+        
+        layout = QVBoxLayout(self)
+        
+        self.autostart_cb = QCheckBox("Iniciar automáticamente con Linux")
+        self.minimized_cb = QCheckBox("Iniciar minimizado en la bandeja")
+        
+        layout.addWidget(self.autostart_cb)
+        layout.addWidget(self.minimized_cb)
+        layout.addStretch()
+        
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Guardar")
+        save_btn.clicked.connect(self.save_and_close)
+        cancel_btn = QPushButton("Cancelar")
+        cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(save_btn)
+        layout.addLayout(btn_layout)
+        
+        self.load_settings()
+
+    def load_settings(self):
+        s = QSettings("AlejandroSocas", "VirtuosoControl")
+        self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
+        
+        autostart_path = os.path.expanduser("~/.config/autostart/virtuoso-control.desktop")
+        self.autostart_cb.setChecked(os.path.exists(autostart_path))
+
+    def save_and_close(self):
+        s = QSettings("AlejandroSocas", "VirtuosoControl")
+        s.setValue("start_minimized", self.minimized_cb.isChecked())
+        
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        autostart_path = os.path.join(autostart_dir, "virtuoso-control.desktop")
+        
+        if self.autostart_cb.isChecked():
+            if not os.path.exists(autostart_dir):
+                os.makedirs(autostart_dir)
+            desktop_content = "[Desktop Entry]\nName=Virtuoso Control\nComment=Panel de control nativo para los auriculares Corsair Virtuoso SE\nExec=python3 /opt/virtuoso-control/virtuoso_gui.py\nIcon=/opt/virtuoso-control/virtuoso_icon.png\nTerminal=false\nType=Application\nCategories=Audio;Settings;HardwareSettings;\nStartupWMClass=virtuoso-control\n"
+            with open(autostart_path, "w") as f:
+                f.write(desktop_content)
+        else:
+            if os.path.exists(autostart_path):
+                os.remove(autostart_path)
+                
+        self.accept()
 
 class VirtuosoGUI(QMainWindow):
     def __init__(self):
@@ -57,6 +111,10 @@ class VirtuosoGUI(QMainWindow):
 
     # ─── Interfaz ────────────────────────────────────────────────────
 
+    def open_settings(self):
+        dlg = SettingsDialog(self)
+        dlg.exec()
+
     def init_ui(self):
         self.setWindowTitle("Virtuoso Control")
         self.setWindowIcon(QIcon(self.icon_path))
@@ -76,9 +134,15 @@ class VirtuosoGUI(QMainWindow):
         self.refresh_conn_btn.setToolTip("Forzar detección de auriculares")
         self.refresh_conn_btn.clicked.connect(self.force_reconnect)
         
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(30, 26)
+        self.settings_btn.setToolTip("Ajustes")
+        self.settings_btn.clicked.connect(self.open_settings)
+        
         status_row.addWidget(self.status_label)
         status_row.addStretch()
         status_row.addWidget(self.refresh_conn_btn)
+        status_row.addWidget(self.settings_btn)
         layout.addLayout(status_row)
 
         batt_row = QHBoxLayout()
@@ -579,7 +643,10 @@ if __name__ == "__main__":
     app.setDesktopFileName("virtuoso-control")
 
     gui = VirtuosoGUI()
-    gui.show()
+    
+    s = QSettings("AlejandroSocas", "VirtuosoControl")
+    if not s.value("start_minimized", False, type=bool):
+        gui.show()
 
     app.aboutToQuit.connect(gui.quit_app)
     sys.exit(app.exec())

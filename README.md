@@ -7,8 +7,10 @@ Una aplicación de control nativa, ligera y persistente para los auriculares Cor
 *   **Iluminación RGB Completa:** Controla el color y el brillo del Logo lateral y del micrófono a través de selectores de color nativos (solo en modo inalámbrico).
 *   **Monitor de Batería Fiable:** Lee de forma segura el estado de la batería, mostrando porcentajes estables y el estado de carga real. Si la batería baja del 15%, envía una notificación de escritorio. Además, ¡el LED de batería de los auriculares reflejará su nivel automáticamente (Verde, Amarillo o Rojo)!
 *   **Soporte Dual (Cable / Dongle):** Detecta automáticamente si estás conectado mediante el dongle inalámbrico o directamente por cable USB, adaptando la interfaz y deshabilitando controles V2W no soportados en modo cable.
+*   **Autoarranque Universal (FreeDesktop):** Configura la aplicación desde el panel de ajustes interno (`⚙`) para que se inicie automáticamente en segundo plano cada vez que enciendas tu PC (compatible con GNOME, KDE, XFCE y cualquier escritorio moderno).
+*   **Inicio Minimizado:** Posibilidad de abrir la aplicación directamente en la bandeja del sistema de forma completamente silenciosa.
 *   **Sidetone (Retorno de Voz):** Control independiente del sidetone mediante ALSA nativo o comandos V2W directos al hardware.
-*   **Icono en el Área de Notificación (Tray):** Accede a todas las funciones rápidas de forma silenciosa desde la barra de tareas.
+*   **Icono en el Área de Notificación (Tray):** Accede a todas las funciones rápidas y al panel de ajustes directamente desde la barra de tareas.
 *   **Conexión Persistente:** Mantiene una sesión HID viva con los auriculares mediante *keep-alive*, previniendo desconexiones inesperadas del dispositivo (comportamiento idéntico al software original de Windows).
 
 ## Requisitos Previos
