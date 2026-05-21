@@ -1,6 +1,6 @@
 # Corsair Virtuoso SE Control for Linux
 
-A lightweight, persistent, and native control panel for the Corsair Virtuoso SE headset on Linux, built by reverse-engineering the V2W HID protocol.
+A lightweight, persistent, and native control panel for the Corsair Virtuoso SE headset on Linux, built by reverse-engineering the V2W HID protocol. It only works with the headsets that have Vendor ID: 1b1c and Product ID: 0a42, 0a4a, 0a41. You can check those IDs with lsusb on the terminal.
 
 > **Note:** This entire application was "vibecoded" from scratch by Alejandro Socas with the assistance and auditing of Google's Gemini AI agent. 
 
