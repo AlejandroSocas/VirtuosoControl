@@ -70,9 +70,19 @@ class VirtuosoGUI(QMainWindow):
         layout = QVBoxLayout(central)
 
         # --- Estado + Batería ---
+        status_row = QHBoxLayout()
         self.status_label = QLabel("⏳ Conectando...")
         self.status_label.setStyleSheet("font-weight: bold; padding: 4px;")
-        layout.addWidget(self.status_label)
+        
+        self.refresh_conn_btn = QPushButton("↻")
+        self.refresh_conn_btn.setFixedSize(30, 26)
+        self.refresh_conn_btn.setToolTip("Forzar detección de auriculares")
+        self.refresh_conn_btn.clicked.connect(self.force_reconnect)
+        
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+        status_row.addWidget(self.refresh_conn_btn)
+        layout.addLayout(status_row)
 
         batt_row = QHBoxLayout()
         self.batt_label = QLabel("🔋 Batería: --")
@@ -392,6 +402,12 @@ class VirtuosoGUI(QMainWindow):
         self.keep_alive_timer.stop()
         if not self.reconnect_timer.isActive():
             self.reconnect_timer.start(5000)
+
+    def force_reconnect(self):
+        self.status_label.setText("⏳ Buscando dispositivo...")
+        self.status_label.setStyleSheet("font-weight: bold; padding: 4px; color: #f39c12;")
+        # Usamos singleShot para permitir que la interfaz se pinte antes del bloqueo
+        QTimer.singleShot(50, self.try_reconnect)
 
     def try_reconnect(self):
         if self.ctrl.reconnect():
