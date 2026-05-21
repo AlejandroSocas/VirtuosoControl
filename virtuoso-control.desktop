@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Virtuoso Control
-Comment=Control panel for Corsair Virtuoso SE headset
-Exec=python3 /home/alejandro/Documentos/Proyectos/Virtuoso-control/virtuoso_gui.py
-Icon=/home/alejandro/Documentos/Proyectos/Virtuoso-control/virtuoso_icon.png
+Comment=Native control panel for Corsair Virtuoso SE headset
+Exec=python3 /opt/virtuoso-control/virtuoso_gui.py
+Icon=/opt/virtuoso-control/virtuoso_icon.png
 Terminal=false
 Type=Application
 Categories=Audio;Settings;HardwareSettings;

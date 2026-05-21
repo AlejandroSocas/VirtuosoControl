@@ -12,10 +12,14 @@ import sys
 import subprocess
 
 VENDOR_ID = 0x1b1c
-PRODUCT_ID = 0x0a42
+PRODUCT_IDS = {
+    0x0a42: "Wireless",
+    0x0a4a: "Wireless",
+    0x0a41: "Wired"
+}
 
-# Endpoints V2W
-EP_RECEIVER = 0x08  # Dongle/receptor USB
+# V2W Endpoints
+EP_RECEIVER = 0x08  # Wireless Dongle/Receiver
 EP_HEADSET = 0x09   # Auriculares
 
 # Tipos de comando V2W
@@ -36,17 +40,20 @@ class VirtuosoController:
         self.device = None
         self._connected = False
         self._handshake_done = False
-        self._alsa_card = None  # Cache del nombre de tarjeta ALSA
-        self._brightness = 100  # Brillo actual (0-100), por defecto máximo
-        self._mic_led = True    # Estado actual del LED del micro
+        self._alsa_card = None  # ALSA card name cache
+        self._brightness = 100  # Current brightness (0-100), max by default
+        self._mic_led = True    # Current state of the Mic LED
+        self.connection_mode = "Unknown"
 
-    # ─── Gestión de conexión ─────────────────────────────────────────
+    # ─── Connection Management ───────────────────────────────────────
 
     def _find_path(self):
-        """Busca el path HID del Virtuoso en la interfaz 4."""
-        for d in hid.enumerate(VENDOR_ID, PRODUCT_ID):
-            if d['interface_number'] == 4:
-                return d['path']
+        """Finds the HID path for the Virtuoso on interface 4."""
+        for pid, mode in PRODUCT_IDS.items():
+            for d in hid.enumerate(VENDOR_ID, pid):
+                if d['interface_number'] == 4:
+                    self.connection_mode = mode
+                    return d['path']
         return None
 
     @property
@@ -216,11 +223,11 @@ class VirtuosoController:
         return self._send_v2w(EP_HEADSET, 0x06, payload)
 
     def set_rgb(self, r, g, b, brightness=100):
-        """Método de retrocompatibilidad. Usa set_all_rgb en su lugar."""
+        """Backwards compatibility method. Use set_all_rgb instead."""
         return self.set_all_rgb((r,g,b), brightness, (0,0,0), 0, (0,0,0), 0)
 
     def send_heartbeat(self):
-        """Envía heartbeat V2W para mantener la sesión activa.
+        """Sends V2W heartbeat to keep the session alive.
 
         Debe llamarse periódicamente (~cada 20s) para evitar que
         el firmware resetee el estado del LED.
@@ -235,22 +242,22 @@ class VirtuosoController:
     # ─── Batería ─────────────────────────────────────────────────────
 
     def get_battery(self):
-        """Lee el nivel de batería de los auriculares.
+        """Reads the battery level of the headset.
 
         Returns:
-            String con el porcentaje y estado, o mensaje de error.
+            String with percentage and status, or error message.
         """
         if not self.is_connected:
-            return "No conectado"
+            return "Not connected"
         if not self._ensure_handshake():
-            return "Error de handshake"
+            return "Handshake error"
 
         valid_percents = []
-        last_status = "Descargando"
+        last_status = "Discharging"
 
-        # Hacemos la comprobación 3 veces seguidas. 
-        # A veces el primer paquete tras un tiempo de inactividad 
-        # devuelve un falso 100% o basura. Tomaremos el último valor.
+        # We perform the check 3 consecutive times. 
+        # Sometimes the first packet after a period of inactivity 
+        # returns a false 100% or garbage data. We take the last value.
         for _ in range(3):
             self._flush_buffer()
             self._send_v2w(EP_HEADSET, CMD_SET, [0x0f])
@@ -261,7 +268,7 @@ class VirtuosoController:
                     res = self.device.read(64)
                 except Exception:
                     self._connected = False
-                    return "Error de lectura"
+                    return "Read error"
 
                 if res and len(res) > 5:
                     raw_val = (res[5] << 8) | res[4]
@@ -270,19 +277,19 @@ class VirtuosoController:
                         
                     percent = min(raw_val // 10, 100)
                     status_byte = res[3]
-                    status = "Cargando" if status_byte in [4, 5] else "Descargando"
+                    status = "Charging" if status_byte in [4, 5] else "Discharging"
                     
                     valid_percents.append(percent)
                     last_status = status
                     break
         
         if valid_percents:
-            # Devolvemos la última lectura, que es la más estable
+            # Return the last reading, which is the most stable
             return f"{valid_percents[-1]}% [{last_status}]"
                 
-        return "Sin respuesta (inténtalo de nuevo)"
+        return "No response (try again)"
 
-    # ─── Sidetone (ALSA) ────────────────────────────────────────────
+    # ─── Sidetone (ALSA) ─────────────────────────────────────────────
 
     def _find_alsa_card(self):
         """Encuentra dinámicamente el nombre de tarjeta ALSA del Corsair.
@@ -296,8 +303,8 @@ class VirtuosoController:
         try:
             with open("/proc/asound/cards", "r") as f:
                 for line in f:
-                    # Formato: " 1 [Gaming         ]: USB-Audio - ..."
-                    if "Corsair" in line or "VIRTUOSO" in line or "Gaming" in line:
+                    # Format: " 1 [Gaming         ]: USB-Audio - ..."
+                    if "Corsair" in line or "VIRTUOSO" in line or "Gaming" in line or "Hea" in line:
                         if "[" in line and "]" in line:
                             start = line.index("[") + 1
                             end = line.index("]")
