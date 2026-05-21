@@ -30,13 +30,9 @@ class VirtuosoGUI(QMainWindow):
         self._hid_connected = False
         self._low_battery_notified = False
 
-        # Icono de la app
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "virtuoso_icon.png")
-        if os.path.exists(icon_path):
-            self.app_icon = QIcon(icon_path)
-        else:
-            self.app_icon = QIcon.fromTheme("audio-headset", QIcon.fromTheme("video-display"))
-        self.setWindowIcon(self.app_icon)
+        # Ruta absoluta al icono
+        self.script_dir = os.path.dirname(os.path.realpath(__file__))
+        self.icon_path = os.path.join(self.script_dir, "virtuoso_icon.png")
 
         self.init_ui()
         self._load_settings()   # Cargar preferencias (señales bloqueadas)
@@ -63,6 +59,7 @@ class VirtuosoGUI(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Virtuoso Control")
+        self.setWindowIcon(QIcon(self.icon_path))
         self.setFixedSize(340, 700)
 
         central = QWidget()
@@ -212,7 +209,7 @@ class VirtuosoGUI(QMainWindow):
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.app_icon)
+        self.tray_icon.setIcon(QIcon(self.icon_path))
         self.tray_icon.setToolTip("Virtuoso Control")
 
         menu = QMenu()
