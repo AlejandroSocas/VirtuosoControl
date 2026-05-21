@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Virtuoso Control — Controlador HID para Corsair Virtuoso SE
+Virtuoso Control — HID Controller for Corsair Virtuoso SE
 
-Gestiona LED del micrófono, sidetone y batería mediante conexión HID
-persistente (como iCUE), evitando las desconexiones USB que causaba
-el patrón anterior de abrir/cerrar para cada comando.
+Manages microphone LED, sidetone and battery via HID connection
+persistent (like iCUE), preventing USB disconnections caused by
+the previous open/close pattern for each command.
 """
 import hid
 import time
@@ -28,12 +28,12 @@ CMD_SET = 0x02
 
 
 class VirtuosoController:
-    """Controlador persistente para Corsair Virtuoso SE.
+    """Persistent controller for Corsair Virtuoso SE.
 
-    A diferencia del enfoque anterior (abrir/cerrar para cada comando),
-    esta implementación mantiene una conexión HID abierta de forma
-    persistente, igual que hace iCUE. Esto evita que los cascos se
-    desconecten al enviar comandos.
+    Unlike the previous approach (open/close for each command),
+    this implementation keeps a persistent HID connection open,
+    just like iCUE does. This prevents the headset from
+    disconnecting when sending commands.
     """
 
     def __init__(self):
@@ -58,17 +58,17 @@ class VirtuosoController:
 
     @property
     def is_connected(self):
-        """Indica si hay una conexión HID activa."""
+        """Indicates if there is an active HID connection."""
         return self._connected and self.device is not None
 
     def connect(self):
-        """Abre el dispositivo HID y realiza el handshake V2W.
+        """Opens the HID device and performs the V2W handshake.
 
-        Se llama UNA VEZ. La conexión se mantiene abierta hasta
-        que se llame a disconnect() o la app se cierre.
+        Called ONCE. The connection is kept open until
+        disconnect() is called or the app closes.
 
         Returns:
-            True si la conexión fue exitosa, False en caso contrario.
+            True if the connection was successful, False otherwise.
         """
         if self.is_connected:
             return True
@@ -82,20 +82,20 @@ class VirtuosoController:
             self.device.open_path(path)
             self.device.set_nonblocking(True)
             self._connected = True
-            # NO hacemos handshake aquí — se hará lazy cuando se necesite.
-            # Así el LED no se apaga al iniciar la app.
+            # We DO NOT handshake here — it will be done lazily when needed.
+            # This prevents the LED from turning off when starting the app.
             return True
         except Exception as e:
-            print(f"Error al conectar: {e}", file=sys.stderr)
+            print(f"Error connecting: {e}", file=sys.stderr)
             self._connected = False
             self.device = None
             return False
 
     def _ensure_handshake(self):
-        """Realiza el handshake V2W si no se ha hecho todavía.
+        """Performs the V2W handshake if not done yet.
 
-        Se llama automáticamente antes de cualquier operación que lo
-        necesite (LED, batería, sidetone V2W, heartbeat).
+        Called automatically before any operation that
+        needs it (LED, battery, V2W sidetone, heartbeat).
         """
         if self._handshake_done:
             return True
@@ -106,7 +106,7 @@ class VirtuosoController:
         return True
 
     def disconnect(self):
-        """Cierra la conexión HID. Solo llamar al cerrar la app."""
+        """Closes the HID connection. Only call when closing the app."""
         if self.device:
             try:
                 self.device.close()
@@ -117,18 +117,18 @@ class VirtuosoController:
         self._handshake_done = False
 
     def reconnect(self):
-        """Reconecta al dispositivo (ej: si se perdió la conexión)."""
+        """Reconnects to the device (e.g. if connection was lost)."""
         self.disconnect()
-        time.sleep(0.5)  # Dar tiempo al subsistema USB
+        time.sleep(0.5)  # Give USB subsystem time
         return self.connect()
 
     # ─── Protocolo V2W ───────────────────────────────────────────────
 
     def _send_v2w(self, endpoint, cmd_type, payload):
-        """Envía un comando V2W por la conexión existente.
+        """Sends a V2W command over the existing connection.
 
-        Formato: [0x00(report_id), 0x02(v2w_marker), endpoint, cmd_type, ...payload]
-        Total: 65 bytes (1 report_id + 64 datos)
+        Format: [0x00(report_id), 0x02(v2w_marker), endpoint, cmd_type, ...payload]
+        Total: 65 bytes (1 report_id + 64 data)
         """
         if not self.device:
             return False
@@ -145,7 +145,7 @@ class VirtuosoController:
             return False
 
     def _flush_buffer(self):
-        """Vacía el buffer HID de datos sobrantes."""
+        """Flushes the HID buffer of leftover data."""
         if not self.device:
             return
         for _ in range(20):
@@ -158,46 +158,46 @@ class VirtuosoController:
             time.sleep(0.005)
 
     def _do_handshake(self):
-        """Realiza el handshake V2W completo.
+        """Performs the complete V2W handshake.
 
-        Basado en la implementación de HeadsetControl (corsair_void_v2w.hpp):
-        1. Solicitar firmware del receptor
-        2. Activar modo software en el receptor
-        3. Heartbeat al receptor
-        4. Activar modo software en los auriculares
-        5. Limpiar buffer
-        6. Heartbeat a los auriculares
+        Based on HeadsetControl implementation (corsair_void_v2w.hpp):
+        1. Request firmware from receiver
+        2. Enable software mode on receiver
+        3. Heartbeat to receiver
+        4. Enable software mode on headset
+        5. Clean buffer
+        6. Heartbeat to headset
         """
-        # 1. Firmware request al receptor
+        # 1. Firmware request to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x13])
 
-        # 2. Software mode al receptor
+        # 2. Software mode to receiver
         self._send_v2w(EP_RECEIVER, CMD_GET, [0x03, 0x00, 0x02])
 
-        # 3. Heartbeat al receptor
+        # 3. Heartbeat to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x12])
 
-        # 4. Software mode a los auriculares
+        # 4. Software mode to headset
         self._send_v2w(EP_HEADSET, CMD_GET, [0x03, 0x00, 0x02])
 
-        # 5. Limpiar buffer de respuestas acumuladas
+        # 5. Clean buffer de respuestas acumuladas
         self._flush_buffer()
 
-        # 6. Heartbeat a los auriculares
+        # 6. Heartbeat to headset
         self._send_v2w(EP_HEADSET, CMD_SET, [0x12])
 
         time.sleep(0.02)
 
     def _init_leds(self):
-        """Inicializa el endpoint de los LEDs (necesario para el control RGB)."""
+        """Initializes the LED endpoint (necessary for RGB control)."""
         return self._send_v2w(EP_HEADSET, 0x0d, [0x00, 0x01])
 
     def set_all_rgb(self, logo_rgb, logo_b, mic_rgb, mic_b, batt_rgb, batt_b):
-        """Ajusta el color RGB de todas las zonas simultáneamente.
+        """Adjusts the RGB color of all zones simultaneously.
         
-        El comando envía los colores para las zonas:
+        The command sends colors for the zones:
         [R1, R2, R3, G1, G2, G3, B1, B2, B3]
-        0=Logo, 1=Batería, 2=Micrófono
+        0=Logo, 1=Battery, 2=Microphone
         """
         if not self.is_connected:
             return False
@@ -208,7 +208,7 @@ class VirtuosoController:
         
         data = [0] * 9
         
-        # Helper para escalar y asignar
+        # Helper to scale and assign
         def _apply_zone(idx, rgb_tuple, brightness):
             scale = brightness / 100.0
             data[idx] = int(rgb_tuple[0] * scale)
@@ -229,11 +229,11 @@ class VirtuosoController:
     def send_heartbeat(self):
         """Sends V2W heartbeat to keep the session alive.
 
-        Debe llamarse periódicamente (~cada 20s) para evitar que
-        el firmware resetee el estado del LED.
+        Must be called periodically (~every 20s) to prevent
+        the firmware from resetting the LED state.
 
         Returns:
-            True si el heartbeat se envió correctamente.
+            True if the heartbeat was sent successfully.
         """
         if not self._ensure_handshake():
             return False
@@ -292,10 +292,10 @@ class VirtuosoController:
     # ─── Sidetone (ALSA) ─────────────────────────────────────────────
 
     def _find_alsa_card(self):
-        """Encuentra dinámicamente el nombre de tarjeta ALSA del Corsair.
+        """Dynamically finds the ALSA card name for the Corsair headset.
 
-        Busca en /proc/asound/cards el dispositivo Corsair y devuelve
-        su nombre corto (el que aparece entre corchetes).
+        Searches /proc/asound/cards for the Corsair device and returns
+        its short name (the one in brackets).
         """
         if self._alsa_card:
             return self._alsa_card
@@ -328,16 +328,16 @@ class VirtuosoController:
         except Exception:
             pass
 
-        return "Gamin"  # Último recurso
+        return "Gamin"  # Last resort
 
     def set_sidetone(self, value):
-        """Controla el sidetone vía ALSA mixer.
+        """Controls the sidetone via ALSA mixer.
 
         Args:
-            value: 'on', 'off', o un número 0-100 (porcentaje).
+            value: 'on', 'off', or a number 0-100 (percentage).
 
         Returns:
-            True si el comando se ejecutó correctamente.
+            True if the command was executed successfully.
         """
         card = self._find_alsa_card()
 
@@ -348,9 +348,9 @@ class VirtuosoController:
                 cmd = ["amixer", "-c", card, "sset", "Sidetone", "mute"]
             else:
                 val_str = f"{value}%" if "%" not in str(value) else str(value)
-                # IMPORTANTE: incluir "unmute" para que al poner un valor
-                # se desmutee automáticamente. Sin esto, si se había hecho
-                # "mute" antes, el canal queda muteado aunque se ponga volumen.
+                # IMPORTANT: include "unmute" so that when setting a value
+                # it un-mutes automatically. Without this, if it was
+                # "muted" before, the channel remains muted even if volume is set.
                 cmd = ["amixer", "-c", card, "sset", "Sidetone", val_str, "unmute"]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -368,50 +368,50 @@ class VirtuosoController:
     # ─── Sidetone (V2W HID) ─────────────────────────────────────────
 
     def set_sidetone_v2w(self, level):
-        """Controla el sidetone vía comandos V2W HID.
+        """Controls the sidetone via V2W HID commands.
 
-        Método alternativo basado en HeadsetControl (corsair_void_v2w.hpp).
-        Puede funcionar mejor que ALSA en algunos sistemas.
+        Alternative method based on HeadsetControl (corsair_void_v2w.hpp).
+        Might work better than ALSA on some systems.
 
-        Secuencia:
-        1. Toggle ANC (debe estar apagado para que sidetone funcione)
-        2. Toggle Sidetone (encender/apagar)
-        3. Establecer nivel (0-1000 internamente)
+        Sequence:
+        1. Toggle ANC (must be off for sidetone to work)
+        2. Toggle Sidetone (turn on/off)
+        3. Set level (0-1000 internally)
 
         Args:
-            level: 0-100 (0 = desactivado).
+            level: 0-100 (0 = disabled).
 
         Returns:
-            True si los comandos se enviaron correctamente.
+            True if the commands were sent successfully.
         """
         if not self.is_connected:
             return False
         if not self._ensure_handshake():
             return False
 
-        # Mapear 0-100 a 0-1000 (rango interno de Corsair)
+        # Map 0-100 to 0-1000 (internal Corsair range)
         mapped = int(level * 10)
-        mapped = (mapped // 10) * 10  # Redondear a múltiplos de 10
+        mapped = (mapped // 10) * 10  # Round to multiples of 10
         low_byte = mapped & 0xFF
         high_byte = (mapped >> 8) & 0xFF
 
         if level == 0:
-            # Apagar sidetone, encender ANC
+            # Turn off sidetone, turn on ANC
             self._send_v2w(EP_HEADSET, CMD_GET, [0xd1, 0x00, 0x01])
             self._send_v2w(EP_HEADSET, CMD_GET, [0x46, 0x00, 0x01])
         else:
-            # Apagar ANC (necesario para que sidetone funcione)
+            # Turn off ANC (necessary for sidetone to work)
             self._send_v2w(EP_HEADSET, CMD_GET, [0xd1])
-            # Encender sidetone
+            # Turn on sidetone
             self._send_v2w(EP_HEADSET, CMD_GET, [0x46])
 
-        # Establecer nivel
+        # Set level
         return self._send_v2w(EP_HEADSET, CMD_GET, [0x47, 0x00, low_byte, high_byte])
 
     # ─── Volumen (ALSA) ─────────────────────────────────────────────
 
     def set_volume(self, value):
-        """Ajusta el volumen vía ALSA mixer."""
+        """Adjusts the volume via ALSA mixer."""
         card = self._find_alsa_card()
         try:
             val_str = f"{value}%" if "%" not in str(value) else str(value)
@@ -428,7 +428,7 @@ class VirtuosoController:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso:")
+        print("Usage:")
         print("  python3 virtuoso_control.py sidetone [on|off|0-100]")
         print("  python3 virtuoso_control.py sidetone-v2w [0-100]")
         print("  python3 virtuoso_control.py volume [0-100]")
@@ -443,7 +443,7 @@ if __name__ == "__main__":
             print(f"Batería: {ctrl.get_battery()}")
             ctrl.disconnect()
         else:
-            print("Error: No se encontró el Virtuoso.")
+            print("Error: Virtuoso not found.")
 
     elif category == "rgb":
         r = int(sys.argv[2]) if len(sys.argv) > 2 else 255
@@ -452,19 +452,19 @@ if __name__ == "__main__":
         brightness = int(sys.argv[5]) if len(sys.argv) > 5 else 100
         if ctrl.connect():
             if ctrl.set_rgb(r, g, b, brightness):
-                print(f"✓ RGB configurado: RGB({r},{g},{b}) Brillo: {brightness}%")
+                print(f"✓ RGB configured: RGB({r},{g},{b}) Brillo: {brightness}%")
             else:
-                print("✗ Error al ajustar RGB.")
+                print("✗ Error adjusting RGB.")
             ctrl.disconnect()
         else:
-            print("Error: No se encontró el Virtuoso.")
+            print("Error: Virtuoso not found.")
 
     elif category == "sidetone":
         val = sys.argv[2].lower() if len(sys.argv) > 2 else ""
         if ctrl.set_sidetone(val):
             print(f"✓ Sidetone (ALSA): {val}")
         else:
-            print("✗ Error al ajustar sidetone.")
+            print("✗ Error adjusting sidetone.")
 
     elif category == "sidetone-v2w":
         val = int(sys.argv[2]) if len(sys.argv) > 2 else 0
@@ -472,14 +472,14 @@ if __name__ == "__main__":
             if ctrl.set_sidetone_v2w(val):
                 print(f"✓ Sidetone (V2W): {val}")
             else:
-                print("✗ Error al ajustar sidetone V2W.")
+                print("✗ Error adjusting sidetone V2W.")
             ctrl.disconnect()
         else:
-            print("Error: No se encontró el Virtuoso.")
+            print("Error: Virtuoso not found.")
 
     elif category == "volume":
         val = sys.argv[2] if len(sys.argv) > 2 else ""
         if ctrl.set_volume(val):
             print(f"✓ Volumen: {val}%")
         else:
-            print("✗ Error al ajustar volumen.")
+            print("✗ Error adjusting volumen.")

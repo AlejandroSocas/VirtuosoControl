@@ -7,10 +7,10 @@ Features:
 - Control de LED del micrófono con keep-alive
 - Sidetone (ALSA / V2W HID)
 - Volumen (ALSA)
-- Monitorización de batería con notificaciones
-- Acciones rápidas desde el tray
-- Persistencia de preferencias entre sesiones
-- Reconexión automática
+- Battery monitoring with notifications
+- Quick actions from tray
+- Persistence of preferences across sessions
+- Automatic reconnection
 """
 import sys
 import os
@@ -89,10 +89,10 @@ class VirtuosoGUI(QMainWindow):
         self.icon_path = os.path.join(self.script_dir, "virtuoso_icon.png")
 
         self.init_ui()
-        self._load_settings()   # Cargar preferencias (señales bloqueadas)
-        self.init_tray()        # Tray con acciones rápidas
+        self._load_settings()   # Load preferences (signals blocked)
+        self.init_tray()        # Tray with quick actions
 
-        # Timer: keep-alive del LED (cada 20s)
+        # Timer: LED keep-alive (every 20s)
         self.keep_alive_timer = QTimer()
         self.keep_alive_timer.timeout.connect(self.do_keep_alive)
 
@@ -269,7 +269,7 @@ class VirtuosoGUI(QMainWindow):
 
         layout.addStretch()
 
-    # ─── Tray con acciones rápidas ───────────────────────────────────
+    # ─── Tray with quick actions ───────────────────────────────────
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -619,7 +619,7 @@ class VirtuosoGUI(QMainWindow):
                 10_000)
             self._low_battery_notified = True
         elif percent >= 20:
-            # Resetear flag cuando vuelve a subir (ej: cargando)
+            # Reset flag when it goes up (e.g., charging)
             self._low_battery_notified = False
 
     # ─── Lifecycle ───────────────────────────────────────────────────
