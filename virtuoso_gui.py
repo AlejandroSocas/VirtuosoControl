@@ -360,13 +360,31 @@ class VirtuosoGUI(QMainWindow):
 
     def _update_status(self, connected):
         if connected:
-            self.status_label.setText("🟢 Conectado — Corsair Virtuoso SE")
+            self.status_label.setText(f"🟢 Conectado — {self.ctrl.connection_mode}")
             self.status_label.setStyleSheet(
                 "font-weight: bold; padding: 4px; color: #2ecc71;")
+                
+            # Desactivar controles V2W si estamos por cable
+            is_wired = "Por Cable" in self.ctrl.connection_mode
+            self.batt_btn.setDisabled(is_wired)
+            self.mic_color_btn.setDisabled(is_wired)
+            self.mic_slider.setDisabled(is_wired)
+            self.rgb_color_btn.setDisabled(is_wired)
+            self.rgb_slider.setDisabled(is_wired)
+            
+            if is_wired:
+                self.batt_label.setText("🔋 Batería: N/A (Cable)")
+                self.tray_batt_action.setText("🔋 Batería: N/A (Cable)")
+                
         else:
             self.status_label.setText("🔴 Desconectado — Buscando dispositivo...")
             self.status_label.setStyleSheet(
                 "font-weight: bold; padding: 4px; color: #e74c3c;")
+            self.batt_btn.setDisabled(True)
+            self.mic_color_btn.setDisabled(True)
+            self.mic_slider.setDisabled(True)
+            self.rgb_color_btn.setDisabled(True)
+            self.rgb_slider.setDisabled(True)
 
     def _on_connection_lost(self):
         self._hid_connected = False
