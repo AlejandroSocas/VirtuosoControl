@@ -13,9 +13,17 @@ import subprocess
 
 VENDOR_ID = 0x1b1c
 PRODUCT_IDS = {
+    # Wireless Dongles
+    0x0a3f: "Wireless",
     0x0a42: "Wireless",
     0x0a4a: "Wireless",
-    0x0a41: "Wired"
+    0x0a63: "Wireless",
+    
+    # Wired Connections / Direct USB headsets
+    0x0a3d: "Wired",
+    0x0a41: "Wired",
+    0x0a49: "Wired",
+    0x0a62: "Wired"
 }
 
 # V2W Endpoints
@@ -252,6 +260,17 @@ class VirtuosoController:
         if not self._ensure_handshake():
             return "Handshake error"
 
+        # Check if the headset is physically connected via USB (charging)
+        is_usb_charging = False
+        try:
+            wired_pids = [0x0a3d, 0x0a41, 0x0a49, 0x0a62]
+            for d in hid.enumerate(VENDOR_ID):
+                if d['product_id'] in wired_pids:
+                    is_usb_charging = True
+                    break
+        except Exception:
+            pass
+
         valid_percents = []
         last_status = "Discharging"
 
@@ -277,7 +296,11 @@ class VirtuosoController:
                         
                     percent = min(raw_val // 10, 100)
                     status_byte = res[3]
-                    status = "Charging" if status_byte in [4, 5] else "Discharging"
+                    
+                    if is_usb_charging or status_byte in [4, 5]:
+                        status = "Charging"
+                    else:
+                        status = "Discharging"
                     
                     valid_percents.append(percent)
                     last_status = status
