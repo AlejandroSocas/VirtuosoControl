@@ -249,6 +249,18 @@ class VirtuosoController:
 
     # ─── Batería ─────────────────────────────────────────────────────
 
+    @property
+    def is_usb_charging(self):
+        """Checks if the headset is physically connected via USB."""
+        try:
+            wired_pids = [0x0a3d, 0x0a41, 0x0a49, 0x0a62]
+            for d in hid.enumerate(VENDOR_ID):
+                if d['product_id'] in wired_pids:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def get_battery(self):
         """Reads the battery level of the headset.
 
@@ -261,15 +273,7 @@ class VirtuosoController:
             return "Handshake error"
 
         # Check if the headset is physically connected via USB (charging)
-        is_usb_charging = False
-        try:
-            wired_pids = [0x0a3d, 0x0a41, 0x0a49, 0x0a62]
-            for d in hid.enumerate(VENDOR_ID):
-                if d['product_id'] in wired_pids:
-                    is_usb_charging = True
-                    break
-        except Exception:
-            pass
+        usb_charging = self.is_usb_charging
 
         valid_percents = []
         last_status = "Discharging"
@@ -297,7 +301,7 @@ class VirtuosoController:
                     percent = min(raw_val // 10, 100)
                     status_byte = res[3]
                     
-                    if is_usb_charging or status_byte in [4, 5]:
+                    if usb_charging or status_byte in [4, 5]:
                         status = "Charging"
                     else:
                         status = "Discharging"

@@ -1,6 +1,6 @@
 # Corsair Virtuoso SE Control for Linux
 
-A lightweight, persistent, and native control panel for the Corsair Virtuoso SE headset on Linux, built by reverse-engineering the V2W HID protocol. It only works with the headsets that have Vendor ID: 1b1c and Product ID: 0a42, 0a4a, 0a41. You can check those IDs with lsusb on the terminal.
+A lightweight, persistent, and native control panel for the Corsair Virtuoso SE/XT headset line on Linux, built by reverse-engineering the V2W HID protocol. It works with all Virtuoso models in both wireless dongle and wired USB modes.
 
 > **Note:** This entire application was "vibecoded" from scratch by Alejandro Socas with the assistance and auditing of Google's Gemini AI agent. 
 
@@ -9,8 +9,11 @@ A lightweight, persistent, and native control panel for the Corsair Virtuoso SE 
 ## Key Features
 
 *   **Accurate Battery Monitor:** Reads the actual battery level reliably, displaying stable percentages and charging status. Sends a desktop notification if the battery drops below 15%. Also, the physical hardware battery LED will accurately reflect its level (Green, Yellow, or Red)!
-*   **Full RGB Lighting:** Control the exact color and brightness of both the side Logo and the Microphone LED through native color pickers (wireless mode only).
+*   **Smart Battery Polling:** To prevent the headset from emitting annoying "reconnection beeps" when the battery is low (<15%), the application automatically suspends wireless battery polling until you connect the USB cable to charge.
+*   **Dynamic Tray Icon:** The system tray icon acts as a live battery indicator, dynamically filling up and changing colors (Green, Yellow, Red, or Blue when charging) based on the headset's battery level.
+*   **Full RGB Lighting & Profiles:** Control the exact color and brightness of both the side Logo and the Microphone LED through native color pickers (wireless mode only). You can save up to 3 custom **RGB Profiles** and switch between them instantly using the system tray context menu!
 *   **Dual-Mode Support (Wired / Dongle):** Automatically detects whether you are using the Wireless Dongle or connected directly via USB cable. The UI seamlessly adapts by disabling unsupported V2W wireless features in wired mode.
+*   **Bilingual Support (English & Spanish):** Seamlessly switch the application language between English and Spanish directly from the Settings menu.
 *   **Sidetone & Volume:** Independent control of sidetone and volume using native ALSA or direct V2W hardware commands.
 *   **Universal Autostart (FreeDesktop):** Configure the app from the internal settings panel (`⚙`) to automatically start in the background every time you boot your PC (fully compatible with GNOME, KDE, XFCE, and any modern desktop).
 *   **Start Minimized:** Option to launch the application directly into the system tray, keeping your screen clean.

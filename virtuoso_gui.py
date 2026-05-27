@@ -17,31 +17,99 @@ import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
                              QGroupBox, QSystemTrayIcon, QMenu, QCheckBox,
-                             QRadioButton, QButtonGroup, QColorDialog, QDialog)
-from PyQt6.QtCore import Qt, QTimer, QSettings
-from PyQt6.QtGui import QIcon, QAction, QColor
+                             QRadioButton, QButtonGroup, QColorDialog, QDialog, QComboBox)
+from PyQt6.QtCore import Qt, QTimer, QSettings, QRect
+from PyQt6.QtGui import QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen
 from virtuoso_control import VirtuosoController
 
+TRANSLATIONS = {
+    "es": {
+        "Settings": "Configuración",
+        "Start automatically with Linux": "Iniciar automáticamente con Linux",
+        "Start minimized in system tray": "Iniciar minimizado en la bandeja",
+        "Language (requires restart):": "Idioma (requiere reinicio):",
+        "Save": "Guardar",
+        "Cancel": "Cancelar",
+        "Connecting...": "Conectando...",
+        "Battery": "Batería",
+        "Refresh": "Actualizar",
+        "Microphone": "Micrófono",
+        "Pick Color": "Elegir Color",
+        "Color:": "Color:",
+        "Brightness:": "Brillo:",
+        "RGB Lighting": "Iluminación RGB",
+        "Sidetone": "Sidetone",
+        "Method:": "Método:",
+        "Disable Sidetone": "Desactivar Sidetone",
+        "Enable Sidetone": "Activar Sidetone",
+        "Level:": "Nivel:",
+        "Volume": "Volumen",
+        "Profile 1": "Perfil 1",
+        "Profile 2": "Perfil 2",
+        "Profile 3": "Perfil 3",
+        "Save 1": "Guardar 1",
+        "Save 2": "Guardar 2",
+        "Save 3": "Guardar 3",
+        "🎨 RGB Profiles": "🎨 Perfiles RGB",
+        "Load Profile 1": "Cargar Perfil 1",
+        "Load Profile 2": "Cargar Perfil 2",
+        "Load Profile 3": "Cargar Perfil 3",
+        "Open": "Abrir",
+        "Quit": "Salir",
+        "Connected": "Conectado",
+        "Disconnected": "Desconectado",
+        "Searching for device...": "Buscando dispositivo...",
+        "Wired": "Por cable",
+        "Not connected": "No conectado",
+        "Charging": "Cargando",
+        "Discharging": "Descargando",
+        "Handshake error": "Error de conexión",
+        "Read error": "Error de lectura",
+        "No response (try again)": "Sin respuesta",
+        "Pick Logo Color": "Elegir Color del Logo",
+        "Pick Microphone Color": "Elegir Color del Micrófono",
+        "🔊 Sidetone: Enabled": "🔊 Sidetone: Activado",
+        "🔇 Sidetone: Disabled": "🔇 Sidetone: Desactivado",
+        "Profile Saved": "Perfil Guardado",
+        "Error": "Error",
+        "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
+    }
+}
+
+def _tr(text):
+    s = QSettings("AlejandroSocas", "VirtuosoControl")
+    lang = s.value("language", "en", type=str)
+    if lang == "es" and text in TRANSLATIONS["es"]:
+        return TRANSLATIONS["es"][text]
+    return text
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setFixedSize(300, 150)
+        self.setWindowTitle(_tr("Settings"))
+        self.setFixedSize(300, 200)
         
         layout = QVBoxLayout(self)
         
-        self.autostart_cb = QCheckBox("Start automatically with Linux")
-        self.minimized_cb = QCheckBox("Start minimized in system tray")
+        self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
+        self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
+        
+        lang_layout = QHBoxLayout()
+        lang_layout.addWidget(QLabel(_tr("Language (requires restart):")))
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItem("English", "en")
+        self.lang_combo.addItem("Español", "es")
+        lang_layout.addWidget(self.lang_combo)
         
         layout.addWidget(self.autostart_cb)
         layout.addWidget(self.minimized_cb)
+        layout.addLayout(lang_layout)
         layout.addStretch()
         
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("Save")
+        save_btn = QPushButton(_tr("Save"))
         save_btn.clicked.connect(self.save_and_close)
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton(_tr("Cancel"))
         cancel_btn.clicked.connect(self.reject)
         
         btn_layout.addStretch()
@@ -55,12 +123,18 @@ class SettingsDialog(QDialog):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
         
+        lang = s.value("language", "en", type=str)
+        index = self.lang_combo.findData(lang)
+        if index >= 0:
+            self.lang_combo.setCurrentIndex(index)
+            
         autostart_path = os.path.expanduser("~/.config/autostart/virtuoso-control.desktop")
         self.autostart_cb.setChecked(os.path.exists(autostart_path))
 
     def save_and_close(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         s.setValue("start_minimized", self.minimized_cb.isChecked())
+        s.setValue("language", self.lang_combo.currentData())
         
         autostart_dir = os.path.expanduser("~/.config/autostart")
         autostart_path = os.path.join(autostart_dir, "virtuoso-control.desktop")
@@ -126,17 +200,17 @@ class VirtuosoGUI(QMainWindow):
 
         # --- Status + Battery ---
         status_row = QHBoxLayout()
-        self.status_label = QLabel("⏳ Connecting...")
+        self.status_label = QLabel(_tr("⏳ Connecting..."))
         self.status_label.setStyleSheet("font-weight: bold; padding: 4px;")
         
         self.refresh_conn_btn = QPushButton("↻")
         self.refresh_conn_btn.setFixedSize(30, 26)
-        self.refresh_conn_btn.setToolTip("Force headset detection")
+        self.refresh_conn_btn.setToolTip(_tr("Refresh"))
         self.refresh_conn_btn.clicked.connect(self.force_reconnect)
         
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setFixedSize(30, 26)
-        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.setToolTip(_tr("Settings"))
         self.settings_btn.clicked.connect(self.open_settings)
         
         status_row.addWidget(self.status_label)
@@ -146,8 +220,8 @@ class VirtuosoGUI(QMainWindow):
         layout.addLayout(status_row)
 
         batt_row = QHBoxLayout()
-        self.batt_label = QLabel("🔋 Battery: --")
-        self.batt_btn = QPushButton("Refresh")
+        self.batt_label = QLabel(_tr("🔋 Battery: --"))
+        self.batt_btn = QPushButton(_tr("Refresh"))
         self.batt_btn.setFixedWidth(80)
         self.batt_btn.clicked.connect(self.check_battery)
         batt_row.addWidget(self.batt_label)
@@ -156,16 +230,16 @@ class VirtuosoGUI(QMainWindow):
         layout.addLayout(batt_row)
 
         # --- Microphone ---
-        mic_group = QGroupBox("Microphone")
+        mic_group = QGroupBox(_tr("Microphone"))
         mic_lay = QVBoxLayout()
         
         mic_color_row = QHBoxLayout()
-        self.mic_color_btn = QPushButton("Pick Color")
+        self.mic_color_btn = QPushButton(_tr("Pick Color"))
         self.mic_color_btn.clicked.connect(self.choose_mic_color)
         self.mic_color_preview = QLabel(" ")
         self.mic_color_preview.setFixedSize(30, 20)
         self.mic_color_preview.setStyleSheet("background-color: #ff0000; border: 1px solid black;")
-        mic_color_row.addWidget(QLabel("Color:"))
+        mic_color_row.addWidget(QLabel(_tr("Color:")))
         mic_color_row.addWidget(self.mic_color_preview)
         mic_color_row.addWidget(self.mic_color_btn)
         
@@ -180,22 +254,22 @@ class VirtuosoGUI(QMainWindow):
         mic_slider_row.addWidget(self.mic_label)
         
         mic_lay.addLayout(mic_color_row)
-        mic_lay.addWidget(QLabel("Brightness:"))
+        mic_lay.addWidget(QLabel(_tr("Brightness:")))
         mic_lay.addLayout(mic_slider_row)
         mic_group.setLayout(mic_lay)
         layout.addWidget(mic_group)
 
         # --- RGB Lighting ---
-        rgb_group = QGroupBox("RGB Lighting")
+        rgb_group = QGroupBox(_tr("RGB Lighting"))
         rgb_lay = QVBoxLayout()
         
         rgb_color_row = QHBoxLayout()
-        self.rgb_color_btn = QPushButton("Pick Color")
+        self.rgb_color_btn = QPushButton(_tr("Pick Color"))
         self.rgb_color_btn.clicked.connect(self.choose_color)
         self.rgb_color_preview = QLabel(" ")
         self.rgb_color_preview.setFixedSize(30, 20)
         self.rgb_color_preview.setStyleSheet("background-color: #ff0000; border: 1px solid black;")
-        rgb_color_row.addWidget(QLabel("Color:"))
+        rgb_color_row.addWidget(QLabel(_tr("Color:")))
         rgb_color_row.addWidget(self.rgb_color_preview)
         rgb_color_row.addWidget(self.rgb_color_btn)
         
@@ -210,13 +284,40 @@ class VirtuosoGUI(QMainWindow):
         rgb_slider_row.addWidget(self.rgb_label)
         
         rgb_lay.addLayout(rgb_color_row)
-        rgb_lay.addWidget(QLabel("Brightness:"))
+        rgb_lay.addWidget(QLabel(_tr("Brightness:")))
         rgb_lay.addLayout(rgb_slider_row)
+        
+        # Profiles
+        profile_row = QHBoxLayout()
+        self.profile_btn_1 = QPushButton(_tr("Profile 1"))
+        self.profile_btn_2 = QPushButton(_tr("Profile 2"))
+        self.profile_btn_3 = QPushButton(_tr("Profile 3"))
+        self.profile_btn_1.clicked.connect(lambda: self.load_profile(1))
+        self.profile_btn_2.clicked.connect(lambda: self.load_profile(2))
+        self.profile_btn_3.clicked.connect(lambda: self.load_profile(3))
+        profile_row.addWidget(self.profile_btn_1)
+        profile_row.addWidget(self.profile_btn_2)
+        profile_row.addWidget(self.profile_btn_3)
+        
+        save_profile_row = QHBoxLayout()
+        self.save_p1 = QPushButton(_tr("Save 1"))
+        self.save_p2 = QPushButton(_tr("Save 2"))
+        self.save_p3 = QPushButton(_tr("Save 3"))
+        self.save_p1.clicked.connect(lambda: self.save_profile(1))
+        self.save_p2.clicked.connect(lambda: self.save_profile(2))
+        self.save_p3.clicked.connect(lambda: self.save_profile(3))
+        save_profile_row.addWidget(self.save_p1)
+        save_profile_row.addWidget(self.save_p2)
+        save_profile_row.addWidget(self.save_p3)
+
+        rgb_lay.addLayout(profile_row)
+        rgb_lay.addLayout(save_profile_row)
+
         rgb_group.setLayout(rgb_lay)
         layout.addWidget(rgb_group)
 
         # --- Sidetone ---
-        side_group = QGroupBox("Sidetone")
+        side_group = QGroupBox(_tr("Sidetone"))
         side_lay = QVBoxLayout()
 
         method_row = QHBoxLayout()
@@ -227,13 +328,13 @@ class VirtuosoGUI(QMainWindow):
         self.side_method_group.addButton(self.side_alsa_radio)
         self.side_method_group.addButton(self.side_v2w_radio)
         self.side_alsa_radio.toggled.connect(self._save_settings)
-        method_row.addWidget(QLabel("Método:"))
+        method_row.addWidget(QLabel(_tr("Method:")))
         method_row.addWidget(self.side_alsa_radio)
         method_row.addWidget(self.side_v2w_radio)
         method_row.addStretch()
         side_lay.addLayout(method_row)
 
-        self.side_toggle = QPushButton("Desactivar Sidetone")
+        self.side_toggle = QPushButton(_tr("Disable Sidetone"))
         self.side_toggle.setCheckable(True)
         self.side_toggle.clicked.connect(self.toggle_sidetone)
 
@@ -248,13 +349,13 @@ class VirtuosoGUI(QMainWindow):
         side_slider_row.addWidget(self.side_label)
 
         side_lay.addWidget(self.side_toggle)
-        side_lay.addWidget(QLabel("Nivel:"))
+        side_lay.addWidget(QLabel(_tr("Level:")))
         side_lay.addLayout(side_slider_row)
         side_group.setLayout(side_lay)
         layout.addWidget(side_group)
 
         # --- Volume ---
-        vol_group = QGroupBox("Volumen")
+        vol_group = QGroupBox(_tr("Volume"))
         vol_lay = QHBoxLayout()
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
@@ -281,26 +382,40 @@ class VirtuosoGUI(QMainWindow):
 
 
         # Toggle Sidetone (sincronizado con botón principal)
-        self.tray_side_action = QAction("🔊 Sidetone: Activado", self)
+        self.tray_side_action = QAction(_tr("🔊 Sidetone: Enabled"), self)
         self.tray_side_action.setCheckable(True)
         self.tray_side_action.setChecked(self.side_toggle.isChecked())
         self.tray_side_action.triggered.connect(self._tray_toggle_sidetone)
         menu.addAction(self.tray_side_action)
 
         menu.addSeparator()
+        
+        # RGB Profiles Menu
+        profiles_menu = menu.addMenu(_tr("🎨 RGB Profiles"))
+        p1_action = QAction(_tr("Load Profile 1"), self)
+        p1_action.triggered.connect(lambda: self.load_profile(1))
+        p2_action = QAction(_tr("Load Profile 2"), self)
+        p2_action.triggered.connect(lambda: self.load_profile(2))
+        p3_action = QAction(_tr("Load Profile 3"), self)
+        p3_action.triggered.connect(lambda: self.load_profile(3))
+        profiles_menu.addAction(p1_action)
+        profiles_menu.addAction(p2_action)
+        profiles_menu.addAction(p3_action)
+
+        menu.addSeparator()
 
         # Batería (click para actualizar)
-        self.tray_batt_action = QAction("🔋 Battery: --", self)
+        self.tray_batt_action = QAction(_tr("🔋 Battery: --"), self)
         self.tray_batt_action.triggered.connect(self.check_battery)
         menu.addAction(self.tray_batt_action)
 
         menu.addSeparator()
 
-        open_action = QAction("Abrir", self)
+        open_action = QAction(_tr("Open"), self)
         open_action.triggered.connect(self.show)
         menu.addAction(open_action)
 
-        exit_action = QAction("Quit", self)
+        exit_action = QAction(_tr("Quit"), self)
         exit_action.triggered.connect(self.quit_app)
         menu.addAction(exit_action)
 
@@ -329,7 +444,7 @@ class VirtuosoGUI(QMainWindow):
         muted = self.side_toggle.isChecked()
         self.tray_side_action.setChecked(muted)
         self.tray_side_action.setText(
-            "🔇 Sidetone: Desactivado" if muted else "🔊 Sidetone: Activado")
+            _tr("🔇 Sidetone: Disabled") if muted else _tr("🔊 Sidetone: Enabled"))
 
     # ─── Persistencia de preferencias ────────────────────────────────
 
@@ -372,9 +487,9 @@ class VirtuosoGUI(QMainWindow):
         self.side_label.setText(f"{self.side_slider.value()}%")
         self.vol_label.setText(f"{self.vol_slider.value()}%")
         if self.side_toggle.isChecked():
-            self.side_toggle.setText("Activar Sidetone")
+            self.side_toggle.setText(_tr("Enable Sidetone"))
         else:
-            self.side_toggle.setText("Desactivar Sidetone")
+            self.side_toggle.setText(_tr("Disable Sidetone"))
 
         # Desbloquear señales
         for w in (self.side_toggle,
@@ -431,12 +546,12 @@ class VirtuosoGUI(QMainWindow):
 
     def _update_status(self, connected):
         if connected:
-            self.status_label.setText(f"🟢 Connected — {self.ctrl.connection_mode}")
+            self.status_label.setText(f"🟢 {_tr('Connected')} — {_tr(self.ctrl.connection_mode)}")
             self.status_label.setStyleSheet(
                 "font-weight: bold; padding: 4px; color: #2ecc71;")
                 
             # Disable V2W controls if on wired mode
-            is_wired = "Por Cable" in self.ctrl.connection_mode
+            is_wired = "Wired" in self.ctrl.connection_mode
             self.batt_btn.setDisabled(is_wired)
             self.mic_color_btn.setDisabled(is_wired)
             self.mic_slider.setDisabled(is_wired)
@@ -444,11 +559,12 @@ class VirtuosoGUI(QMainWindow):
             self.rgb_slider.setDisabled(is_wired)
             
             if is_wired:
-                self.batt_label.setText("🔋 Battery: N/A (Wired)")
-                self.tray_batt_action.setText("🔋 Battery: N/A (Wired)")
+                self.batt_label.setText(_tr("🔋 Battery: N/A (Wired)"))
+                self.tray_batt_action.setText(_tr("🔋 Battery: N/A (Wired)"))
+                self.tray_icon.setIcon(QIcon(self.icon_path))
                 
         else:
-            self.status_label.setText("🔴 Disconnected — Searching for device...")
+            self.status_label.setText(_tr("🔴 Disconnected — Searching for device..."))
             self.status_label.setStyleSheet(
                 "font-weight: bold; padding: 4px; color: #e74c3c;")
             self.batt_btn.setDisabled(True)
@@ -456,6 +572,7 @@ class VirtuosoGUI(QMainWindow):
             self.mic_slider.setDisabled(True)
             self.rgb_color_btn.setDisabled(True)
             self.rgb_slider.setDisabled(True)
+            self.tray_icon.setIcon(QIcon(self.icon_path))
 
     def _on_connection_lost(self):
         self._hid_connected = False
@@ -465,7 +582,7 @@ class VirtuosoGUI(QMainWindow):
             self.reconnect_timer.start(5000)
 
     def force_reconnect(self):
-        self.status_label.setText("⏳ Searching for device...")
+        self.status_label.setText(_tr("⏳ Connecting..."))
         self.status_label.setStyleSheet("font-weight: bold; padding: 4px; color: #f39c12;")
         # Use singleShot to allow UI to paint before blocking
         QTimer.singleShot(50, self.try_reconnect)
@@ -494,7 +611,7 @@ class VirtuosoGUI(QMainWindow):
     # ─── Iluminación RGB ─────────────────────────────────────────────
 
     def choose_color(self):
-        color = QColorDialog.getColor(self._current_color, self, "Elegir Color del Logo")
+        color = QColorDialog.getColor(self._current_color, self, _tr("Pick Logo Color"))
         if color.isValid():
             self._current_color = color
             self.rgb_color_preview.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
@@ -508,7 +625,7 @@ class VirtuosoGUI(QMainWindow):
         self._save_settings()
 
     def choose_mic_color(self):
-        color = QColorDialog.getColor(self._current_mic_color, self, "Pick Microphone Color")
+        color = QColorDialog.getColor(self._current_mic_color, self, _tr("Pick Microphone Color"))
         if color.isValid():
             self._current_mic_color = color
             self.mic_color_preview.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
@@ -537,6 +654,37 @@ class VirtuosoGUI(QMainWindow):
                 100
             )
 
+    def save_profile(self, index):
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        s.setValue(f"profile_{index}_rgb_color", self._current_color.name())
+        s.setValue(f"profile_{index}_rgb_brightness", self.rgb_slider.value())
+        s.setValue(f"profile_{index}_mic_color", self._current_mic_color.name())
+        s.setValue(f"profile_{index}_mic_brightness", self.mic_slider.value())
+        if self.tray_icon:
+            self.tray_icon.showMessage(_tr("Profile Saved"), _tr("Profile {} saved successfully.").format(index), QSystemTrayIcon.MessageIcon.Information, 2000)
+
+    def load_profile(self, index):
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        
+        rgb_color = s.value(f"profile_{index}_rgb_color", None, type=str)
+        if not rgb_color:
+            if self.tray_icon:
+                self.tray_icon.showMessage(_tr("Error"), _tr("Profile {} is empty.").format(index), QSystemTrayIcon.MessageIcon.Warning, 2000)
+            return
+            
+        self._current_color = QColor(rgb_color)
+        self.rgb_slider.setValue(s.value(f"profile_{index}_rgb_brightness", 100, type=int))
+        self._current_mic_color = QColor(s.value(f"profile_{index}_mic_color", "#ff0000", type=str))
+        self.mic_slider.setValue(s.value(f"profile_{index}_mic_brightness", 100, type=int))
+        
+        self.rgb_color_preview.setStyleSheet(f"background-color: {self._current_color.name()}; border: 1px solid black;")
+        self.mic_color_preview.setStyleSheet(f"background-color: {self._current_mic_color.name()}; border: 1px solid black;")
+        self.rgb_label.setText(f"{self.rgb_slider.value()}%")
+        self.mic_label.setText(f"{self.mic_slider.value()}%")
+        
+        self.apply_rgb()
+        self._save_settings()
+
     # ─── Sidetone ────────────────────────────────────────────────────
 
     def _apply_sidetone(self, value):
@@ -554,10 +702,10 @@ class VirtuosoGUI(QMainWindow):
                 self._apply_sidetone(0)
             else:
                 self._apply_sidetone("off")
-            self.side_toggle.setText("Activar Sidetone")
+            self.side_toggle.setText(_tr("Enable Sidetone"))
         else:
             self._apply_sidetone(self.side_slider.value())
-            self.side_toggle.setText("Desactivar Sidetone")
+            self.side_toggle.setText(_tr("Disable Sidetone"))
 
         self._sync_tray_sidetone()
         self._save_settings()
@@ -580,9 +728,13 @@ class VirtuosoGUI(QMainWindow):
     def check_battery(self):
         """Queries battery and updates UI + tray."""
         if not self._hid_connected:
-            self._update_battery_display("No conectado")
+            self._update_battery_display(_tr("Not connected"))
             return
         battery_str = self.ctrl.get_battery()
+        # Translate the status part of the battery string
+        for status_key in ["Charging", "Discharging", "Not connected", "Handshake error", "Read error", "No response (try again)"]:
+            if status_key in battery_str:
+                battery_str = battery_str.replace(status_key, _tr(status_key))
         self._update_battery_display(battery_str)
 
         # Notificación de batería baja
@@ -592,15 +744,74 @@ class VirtuosoGUI(QMainWindow):
         """Periodic auto-check. Only if handshake is done
         (to avoid triggering handshake and turning off the LED accidentally)."""
         if self._hid_connected and self.ctrl._handshake_done:
+            # Smart Battery Polling: 
+            # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
+            if hasattr(self, '_last_battery_percent') and self._last_battery_percent < 15:
+                if not self.ctrl.is_usb_charging:
+                    # Keep showing low battery, don't query headset
+                    return
+            
             battery_str = self.ctrl.get_battery()
+            # Translate the status part of the battery string
+            for status_key in ["Charging", "Discharging", "Not connected", "Handshake error", "Read error", "No response (try again)"]:
+                if status_key in battery_str:
+                    battery_str = battery_str.replace(status_key, _tr(status_key))
+                    
             self._update_battery_display(battery_str)
             self._check_low_battery(battery_str)
 
+    def _generate_battery_icon(self, percent, is_charging):
+        if percent is None:
+            return QIcon(self.icon_path)
+            
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw battery outline
+        pen = QPen(Qt.GlobalColor.white)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawRoundedRect(4, 10, 22, 12, 2, 2)
+        painter.drawRect(26, 13, 2, 6) # Tip
+        
+        # Fill color
+        if is_charging:
+            color = QColor(52, 152, 219) # Blue
+        elif percent > 50:
+            color = QColor(46, 204, 113) # Green
+        elif percent > 20:
+            color = QColor(241, 196, 15) # Yellow
+        else:
+            color = QColor(231, 76, 60) # Red
+            
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        
+        # Fill based on percent (width max = 18)
+        fill_width = int(18 * (percent / 100.0))
+        if fill_width > 0:
+            painter.drawRoundedRect(6, 12, fill_width, 8, 1, 1)
+            
+        painter.end()
+        return QIcon(pixmap)
+
     def _update_battery_display(self, battery_str):
         """Updates battery level in window, tray tooltip and menu."""
-        self.batt_label.setText(f"🔋 Battery: {battery_str}")
-        self.tray_batt_action.setText(f"🔋 Battery: {battery_str}")
+        self.batt_label.setText(f"🔋 {_tr('Battery')}: {battery_str}")
+        self.tray_batt_action.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_icon.setToolTip(f"Virtuoso Control — {battery_str}")
+        
+        # Dynamic Tray Icon
+        try:
+            percent_str = battery_str.split("%")[0]
+            percent = int(percent_str)
+            is_charging = _tr("Charging") in battery_str or "Cargando" in battery_str or "Charging" in battery_str
+            self.tray_icon.setIcon(self._generate_battery_icon(percent, is_charging))
+        except:
+            self.tray_icon.setIcon(QIcon(self.icon_path))
 
     def _check_low_battery(self, battery_str):
         """Shows desktop notification if battery < 15%."""
@@ -613,8 +824,8 @@ class VirtuosoGUI(QMainWindow):
 
         if percent < 15 and not self._low_battery_notified:
             self.tray_icon.showMessage(
-                "⚠️ Low Battery — Virtuoso SE",
-                f"The headset is at {percent}% battery.",
+                _tr("⚠️ Low Battery — Virtuoso SE"),
+                _tr("The headset is at {}% battery.").format(percent),
                 QSystemTrayIcon.MessageIcon.Warning,
                 10_000)
             self._low_battery_notified = True
