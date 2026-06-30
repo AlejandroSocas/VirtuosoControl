@@ -127,6 +127,7 @@ class VirtuosoController:
     def reconnect(self):
         """Reconnects to the device (e.g. if connection was lost)."""
         self.disconnect()
+        self._alsa_card = None  # Invalidate ALSA card cache
         time.sleep(0.5)  # Give USB subsystem time
         return self.connect()
 
@@ -246,6 +247,38 @@ class VirtuosoController:
         if not self._ensure_handshake():
             return False
         return self._send_v2w(EP_HEADSET, CMD_SET, [0x12])
+
+    def is_headset_alive(self):
+        """Checks if the headset is actually responding (not just the dongle).
+
+        The dongle stays connected via USB even when the headset is off,
+        so device.write() always succeeds. This method sends a battery
+        query and checks if we get a response back from the headset.
+
+        Returns:
+            True if the headset responded, False if only the dongle is alive.
+        """
+        if not self.is_connected:
+            return False
+        if not self._ensure_handshake():
+            return False
+
+        self._flush_buffer()
+        if not self._send_v2w(EP_HEADSET, CMD_SET, [0x0f]):
+            return False
+
+        # Wait for a response from the headset
+        for _ in range(5):
+            time.sleep(0.05)
+            try:
+                res = self.device.read(64)
+                if res and len(res) > 3:
+                    return True  # Got a response — headset is alive
+            except Exception:
+                self._connected = False
+                return False
+
+        return False  # No response — headset is off
 
     # ─── Batería ─────────────────────────────────────────────────────
 

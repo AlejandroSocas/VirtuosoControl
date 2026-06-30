@@ -510,14 +510,13 @@ class VirtuosoGUI(QMainWindow):
         s.setValue("rgb_color", self._current_color.name())
         s.setValue("rgb_brightness", self.rgb_slider.value())
 
-    def _apply_saved_settings(self):
-        """Aplica las preferencias cargadas al hardware.
-        Se llama después de _try_initial_connect()."""
-        self.keep_alive_timer.start(20_000)
+    def _reapply_all_settings(self):
+        """Re-applies all saved settings to the hardware.
+        Called on initial connect and after every successful reconnection."""
+        # RGB
+        self.apply_rgb()
 
-
-
-        # Sidetone: aplicar nivel o mute
+        # Sidetone
         if self.side_toggle.isChecked():
             if self.side_v2w_radio.isChecked():
                 self._apply_sidetone(0)
@@ -526,11 +525,14 @@ class VirtuosoGUI(QMainWindow):
         else:
             self._apply_sidetone(self.side_slider.value())
 
-        # Volumen
+        # Volume
         self.ctrl.set_volume(self.vol_slider.value())
-        
-        # RGB
-        self.apply_rgb()
+
+    def _apply_saved_settings(self):
+        """Aplica las preferencias cargadas al hardware.
+        Se llama después de _try_initial_connect()."""
+        self.keep_alive_timer.start(20_000)
+        self._reapply_all_settings()
 
     # ─── Conexión HID ────────────────────────────────────────────────
 
@@ -542,7 +544,7 @@ class VirtuosoGUI(QMainWindow):
         else:
             self._hid_connected = False
             self._update_status(False)
-            self.reconnect_timer.start(5000)
+            self.reconnect_timer.start(3000)
 
     def _update_status(self, connected):
         if connected:
@@ -579,7 +581,7 @@ class VirtuosoGUI(QMainWindow):
         self._update_status(False)
         self.keep_alive_timer.stop()
         if not self.reconnect_timer.isActive():
-            self.reconnect_timer.start(5000)
+            self.reconnect_timer.start(3000)
 
     def force_reconnect(self):
         self.status_label.setText(_tr("⏳ Connecting..."))
@@ -588,12 +590,12 @@ class VirtuosoGUI(QMainWindow):
         QTimer.singleShot(50, self.try_reconnect)
 
     def try_reconnect(self):
-        if self.ctrl.reconnect():
+        if self.ctrl.reconnect() and self.ctrl.is_headset_alive():
             self._hid_connected = True
             self._update_status(True)
             self.reconnect_timer.stop()
             self.keep_alive_timer.start(20_000)
-            self.apply_rgb()
+            self._reapply_all_settings()
 
     # ─── LED del micrófono ─────────────────────────────────────────
 
@@ -602,10 +604,12 @@ class VirtuosoGUI(QMainWindow):
     def do_keep_alive(self):
         if not self._hid_connected:
             return
-        if not self.ctrl.send_heartbeat():
+        # Check if the headset is actually responding (not just the dongle)
+        if not self.ctrl.is_headset_alive():
             self._on_connection_lost()
             return
-        # Keep RGB session alive
+        # Headset is alive — send heartbeat and refresh RGB
+        self.ctrl.send_heartbeat()
         self.apply_rgb()
 
     # ─── Iluminación RGB ─────────────────────────────────────────────
