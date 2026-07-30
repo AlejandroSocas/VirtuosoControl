@@ -852,7 +852,7 @@ class VirtuosoGUI(QMainWindow):
         QApplication.instance().quit()
 
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("virtuoso-control")
@@ -865,3 +865,7 @@ if __name__ == "__main__":
 
     app.aboutToQuit.connect(gui.quit_app)
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
