@@ -56,12 +56,17 @@ class VirtuosoController:
     # ─── Connection Management ───────────────────────────────────────
 
     def _find_path(self):
-        """Finds the HID path for the Virtuoso on interface 4."""
-        for pid, mode in PRODUCT_IDS.items():
-            for d in hid.enumerate(VENDOR_ID, pid):
-                if d['interface_number'] == 4:
-                    self.connection_mode = mode
-                    return d['path']
+        """Finds the HID path for the Virtuoso.
+
+        Tries interface 3 first (Slipstream Multi-Device Receiver),
+        then falls back to interface 4 (other models).
+        """
+        for iface in [3, 4]:
+            for pid, mode in PRODUCT_IDS.items():
+                for d in hid.enumerate(VENDOR_ID, pid):
+                    if d['interface_number'] == iface:
+                        self.connection_mode = mode
+                        return d['path']
         return None
 
     @property
