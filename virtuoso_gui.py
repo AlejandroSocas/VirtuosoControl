@@ -75,6 +75,7 @@ TRANSLATIONS = {
         "Muted color:": "Color silenciado:",
         "Pick Mute Color": "Elegir Color Silenciado",
         "Mute feedback sound": "Sonido al silenciar",
+        "Turn off when closing the app": "Apagar al cerrar la aplicación",
         "Tray icon:": "Icono de bandeja:",
         "Virtuoso icon": "Icono de Virtuoso",
         "Battery icon": "Icono de batería",
@@ -180,6 +181,7 @@ class VirtuosoGUI(QMainWindow):
         self._hid_connected = False
         self._low_battery_notified = False
         self._mic_muted = False  # mirrors the headset's reported mute state
+        self._quitting = False
         self._last_battery_percent = None
         self._last_charging = False
         self.batt_tray_icon = None  # optional standalone battery indicator
@@ -407,6 +409,11 @@ class VirtuosoGUI(QMainWindow):
         side_slider_row.addWidget(self.side_slider)
         side_slider_row.addWidget(self.side_label)
 
+        self.side_exit_cb = QCheckBox(_tr("Turn off when closing the app"))
+        self.side_exit_cb.setChecked(True)
+        self.side_exit_cb.toggled.connect(self._save_settings)
+        side_lay.addWidget(self.side_exit_cb)
+
         side_lay.addWidget(self.side_toggle)
         side_lay.addWidget(QLabel(_tr("Level:")))
         side_lay.addLayout(side_slider_row)
@@ -613,7 +620,7 @@ class VirtuosoGUI(QMainWindow):
         s = QSettings("VirtuosoControl", "VirtuosoControl")
 
         # Bloquear señales durante la carga
-        for w in (self.side_toggle, self.mic_tone_cb,
+        for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(True)
@@ -637,6 +644,7 @@ class VirtuosoGUI(QMainWindow):
         self.mic_mute_color_preview.setStyleSheet(
             f"background-color: {mute_hex}; border: 1px solid black;")
         self.mic_tone_cb.setChecked(s.value("mic_tone", True, type=bool))
+        self.side_exit_cb.setChecked(s.value("sidetone_off_on_exit", True, type=bool))
 
         mic_hex = s.value("mic_color", "#ff0000", type=str)
         self._current_mic_color = QColor(mic_hex)
@@ -657,7 +665,7 @@ class VirtuosoGUI(QMainWindow):
             self.side_toggle.setText(_tr("Disable Sidetone"))
 
         # Desbloquear señales
-        for w in (self.side_toggle, self.mic_tone_cb,
+        for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(False)
@@ -668,6 +676,7 @@ class VirtuosoGUI(QMainWindow):
         s.setValue("mic_color", self._current_mic_color.name())
         s.setValue("mic_mute_color", self._mic_mute_color.name())
         s.setValue("mic_tone", self.mic_tone_cb.isChecked())
+        s.setValue("sidetone_off_on_exit", self.side_exit_cb.isChecked())
         s.setValue("mic_brightness", self.mic_slider.value())
 
         s.setValue("sidetone_muted", self.side_toggle.isChecked())
@@ -1094,11 +1103,28 @@ class VirtuosoGUI(QMainWindow):
         self.hide()
 
     def quit_app(self):
+        """Shuts down cleanly. Idempotent — see the guard below.
+
+        __main__ wires this to app.aboutToQuit *and* the tray Quit action, and
+        it calls quit() itself, so without the guard it re-enters via
+        aboutToQuit until Python's recursion limit trips — roughly 14 seconds
+        of teardown work repeated at every level before the app finally exits.
+        """
+        if self._quitting:
+            return
+        self._quitting = True
+
         self._save_settings()
         self.keep_alive_timer.stop()
         self.reconnect_timer.stop()
         self.battery_timer.stop()
         self.mic_button_timer.stop()
+
+        # Sidetone is a mixer setting: it survives the app. Turn it off on the
+        # way out so it cannot be left on with no UI around to switch it off.
+        if self.side_exit_cb.isChecked() and not self.side_toggle.isChecked():
+            self._apply_sidetone(0 if self.side_v2w_radio.isChecked() else "off")
+
         self.ctrl.disconnect()
         QApplication.instance().quit()
 
