@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
                              QGroupBox, QSystemTrayIcon, QMenu, QCheckBox,
                              QRadioButton, QButtonGroup, QColorDialog, QDialog, QComboBox)
-from PyQt6.QtCore import Qt, QTimer, QSettings, QRect
+from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen
 from virtuoso_control import VirtuosoController
 
@@ -75,6 +75,10 @@ TRANSLATIONS = {
         "Muted color:": "Color silenciado:",
         "Pick Mute Color": "Elegir Color Silenciado",
         "Mute feedback sound": "Sonido al silenciar",
+        "Tray icon:": "Icono de bandeja:",
+        "Virtuoso icon": "Icono de Virtuoso",
+        "Battery icon": "Icono de batería",
+        "Both": "Ambos",
         "Profile Saved": "Perfil Guardado",
         "Error": "Error",
         "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
@@ -92,12 +96,19 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_tr("Settings"))
-        self.setFixedSize(300, 200)
+        self.setFixedSize(300, 230)
         
         layout = QVBoxLayout(self)
         
         self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
         self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
+        tray_layout = QHBoxLayout()
+        tray_layout.addWidget(QLabel(_tr("Tray icon:")))
+        self.tray_mode_combo = QComboBox()
+        self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
+        self.tray_mode_combo.addItem(_tr("Battery icon"), "battery")
+        self.tray_mode_combo.addItem(_tr("Both"), "both")
+        tray_layout.addWidget(self.tray_mode_combo)
         
         lang_layout = QHBoxLayout()
         lang_layout.addWidget(QLabel(_tr("Language (requires restart):")))
@@ -108,6 +119,7 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(self.autostart_cb)
         layout.addWidget(self.minimized_cb)
+        layout.addLayout(tray_layout)
         layout.addLayout(lang_layout)
         layout.addStretch()
         
@@ -127,6 +139,10 @@ class SettingsDialog(QDialog):
     def load_settings(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
+        mode = s.value("tray_icon_mode", "virtuoso", type=str)
+        idx = self.tray_mode_combo.findData(mode)
+        if idx >= 0:
+            self.tray_mode_combo.setCurrentIndex(idx)
         
         lang = s.value("language", "en", type=str)
         index = self.lang_combo.findData(lang)
@@ -140,6 +156,7 @@ class SettingsDialog(QDialog):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         s.setValue("start_minimized", self.minimized_cb.isChecked())
         s.setValue("language", self.lang_combo.currentData())
+        s.setValue("tray_icon_mode", self.tray_mode_combo.currentData())
         
         autostart_dir = os.path.expanduser("~/.config/autostart")
         autostart_path = os.path.join(autostart_dir, "virtuoso-control.desktop")
@@ -165,6 +182,9 @@ class VirtuosoGUI(QMainWindow):
         self._mic_muted = False  # mirrors the headset's reported mute state
         self._last_battery_percent = None
         self._last_charging = False
+        self.batt_tray_icon = None  # optional standalone battery indicator
+        self.batt_menu = None
+        self._tray_mode = "virtuoso"
 
         # Absolute path to icon
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -207,7 +227,8 @@ class VirtuosoGUI(QMainWindow):
 
     def open_settings(self):
         dlg = SettingsDialog(self)
-        dlg.exec()
+        if dlg.exec():
+            self._setup_tray_icons()  # applies without a restart
 
     def init_ui(self):
         self.setWindowTitle("Virtuoso Control")
@@ -463,9 +484,103 @@ class VirtuosoGUI(QMainWindow):
         exit_action.triggered.connect(self.quit_app)
         menu.addAction(exit_action)
 
+        self.tray_menu = menu  # keep a reference alongside Qt's ownership
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.activated.connect(self.tray_icon_activated)
-        self.tray_icon.show()
+
+        # Registers the battery icon before the main one so battery sits on
+        # the left, and shows the main icon itself.
+        self._setup_tray_icons()
+
+        # The action label above is hardcoded to the enabled wording, so push
+        # the state loaded from QSettings onto it now.
+        self._sync_tray_sidetone()
+
+    def _setup_tray_icons(self):
+        """Applies the tray icon mode.
+
+        virtuoso — one icon, the app logo, no battery gauge (default)
+        battery  — one icon, the battery gauge drawn onto it
+        both     — app logo plus a second, battery-only icon
+
+        Ordering note: trays generally order icons by registration, so the
+        battery icon is shown before the main one (see init_tray) to place it
+        on the left. Switching to "both" at runtime cannot reorder an icon that
+        is already registered — that needs a restart.
+        """
+        s = QSettings("AlejandroSocas", "VirtuosoControl")
+        self._tray_mode = s.value("tray_icon_mode", "virtuoso", type=str)
+        if self._tray_mode not in ("virtuoso", "battery", "both"):
+            self._tray_mode = "virtuoso"
+
+        if self._tray_mode == "both" and self.batt_tray_icon is None:
+            self.batt_tray_icon = QSystemTrayIcon(self)
+            self.batt_tray_icon.setIcon(QIcon(self.icon_path))
+
+            # Its OWN menu on purpose: setContextMenu() transfers ownership in
+            # PyQt, so handing it the main icon's menu destroys that menu along
+            # with this icon and leaves the main icon pointing at freed memory.
+            self.batt_menu = QMenu()
+            act_refresh = QAction(_tr("Refresh"), self)
+            act_refresh.triggered.connect(self.check_battery)
+            act_open = QAction(_tr("Open"), self)
+            act_open.triggered.connect(self.show)
+            act_quit = QAction(_tr("Quit"), self)
+            act_quit.triggered.connect(self.quit_app)
+            for a in (act_refresh, act_open, act_quit):
+                self.batt_menu.addAction(a)
+            self.batt_tray_icon.setContextMenu(self.batt_menu)
+            self.batt_tray_icon.activated.connect(self._batt_tray_activated)
+
+        # Toggled by visibility rather than destroyed — recreating tray icons
+        # is what caused the ownership crash above.
+        if self._tray_mode == "both":
+            # The tray assigns a position when an icon registers and never
+            # reorders it, so showing the battery icon later always lands it on
+            # the right. Re-register the main icon *behind* it instead.
+            #
+            # Battery is shown FIRST for a second reason: hiding the last
+            # visible tray icon terminates the application, even with
+            # setQuitOnLastWindowClosed(False). Keeping the battery icon up
+            # means the main icon is never the last one when it is withdrawn.
+            self.batt_tray_icon.setVisible(True)
+            if self.tray_icon.isVisible():
+                self.tray_icon.hide()
+                # Deferred so the tray processes the removal before re-adding.
+                QTimer.singleShot(120, self.tray_icon.show)
+            else:
+                self.tray_icon.show()
+        else:
+            if self.batt_tray_icon is not None:
+                self.batt_tray_icon.setVisible(False)
+            self.tray_icon.show()
+
+        if self._tray_mode != "battery":
+            self.tray_icon.setIcon(QIcon(self.icon_path))
+
+        self._refresh_battery_icon()
+
+    def _batt_tray_activated(self, reason):
+        """Left-clicking the battery icon refreshes the reading."""
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.check_battery()
+
+    def _refresh_battery_icon(self):
+        """Draws the battery gauge onto whichever icon owns it in this mode."""
+        if self._tray_mode == "virtuoso":
+            self.tray_icon.setIcon(QIcon(self.icon_path))
+            return
+
+        if self._last_battery_percent is None:
+            icon = QIcon(self.icon_path)
+        else:
+            icon = self._generate_battery_icon(self._last_battery_percent,
+                                               self._last_charging)
+
+        if self._tray_mode == "both" and self.batt_tray_icon is not None:
+            self.batt_tray_icon.setIcon(icon)
+        else:
+            self.tray_icon.setIcon(icon)
 
     def tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -616,8 +731,9 @@ class VirtuosoGUI(QMainWindow):
             if is_wired:
                 self.batt_label.setText(_tr("🔋 Battery: N/A (Wired)"))
                 self.tray_batt_action.setText(_tr("🔋 Battery: N/A (Wired)"))
-                self.tray_icon.setIcon(QIcon(self.icon_path))
-                
+                self._last_battery_percent = None
+                self._refresh_battery_icon()
+
         else:
             self.status_label.setText(_tr("🔴 Disconnected — Searching for device..."))
             self.status_label.setStyleSheet(
@@ -627,7 +743,8 @@ class VirtuosoGUI(QMainWindow):
             self.mic_slider.setDisabled(True)
             self.rgb_color_btn.setDisabled(True)
             self.rgb_slider.setDisabled(True)
-            self.tray_icon.setIcon(QIcon(self.icon_path))
+            self._last_battery_percent = None
+            self._refresh_battery_icon()
 
     def _on_connection_lost(self):
         self._hid_connected = False
@@ -937,15 +1054,18 @@ class VirtuosoGUI(QMainWindow):
         self.batt_label.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_batt_action.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_icon.setToolTip(f"Virtuoso Control — {battery_str}")
-        
-        # Dynamic Tray Icon
+        if self.batt_tray_icon is not None:
+            self.batt_tray_icon.setToolTip(f"🔋 {_tr('Battery')}: {battery_str}")
+
         try:
-            percent_str = battery_str.split("%")[0]
-            percent = int(percent_str)
-            is_charging = _tr("Charging") in battery_str or "Cargando" in battery_str or "Charging" in battery_str
-            self.tray_icon.setIcon(self._generate_battery_icon(percent, is_charging))
-        except:
-            self.tray_icon.setIcon(QIcon(self.icon_path))
+            self._last_battery_percent = int(battery_str.split("%")[0])
+            self._last_charging = (_tr("Charging") in battery_str
+                                   or "Cargando" in battery_str
+                                   or "Charging" in battery_str)
+        except (ValueError, IndexError):
+            self._last_battery_percent = None
+            self._last_charging = False
+        self._refresh_battery_icon()
 
     def _check_low_battery(self, battery_str):
         """Shows desktop notification if battery < 15%."""
