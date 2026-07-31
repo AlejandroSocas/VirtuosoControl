@@ -70,6 +70,11 @@ TRANSLATIONS = {
         "Pick Microphone Color": "Elegir Color del Micrófono",
         "🔊 Sidetone: Enabled": "🔊 Sidetone: Activado",
         "🔇 Sidetone: Disabled": "🔇 Sidetone: Desactivado",
+        "🎤 Mic: Active": "🎤 Micrófono: Activo",
+        "🎤 Mic: Muted": "🎤 Micrófono: Silenciado",
+        "Muted color:": "Color silenciado:",
+        "Pick Mute Color": "Elegir Color Silenciado",
+        "Mute feedback sound": "Sonido al silenciar",
         "Profile Saved": "Perfil Guardado",
         "Error": "Error",
         "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
@@ -157,6 +162,7 @@ class VirtuosoGUI(QMainWindow):
         self.ctrl = VirtuosoController()
         self._hid_connected = False
         self._low_battery_notified = False
+        self._mic_muted = False  # mirrors the headset's reported mute state
         self._last_battery_percent = None
         self._last_charging = False
 
@@ -180,6 +186,12 @@ class VirtuosoGUI(QMainWindow):
         self.battery_timer = QTimer()
         self.battery_timer.timeout.connect(self._auto_battery_check)
         self.battery_timer.start(300_000)
+
+        # Timer: physical mic-mute button. Cheap — a non-blocking HID read
+        # that returns immediately when nothing is pending.
+        self.mic_button_timer = QTimer()
+        self.mic_button_timer.timeout.connect(self._poll_mic_button)
+        self.mic_button_timer.start(150)
 
         # Connect and apply saved preferences
         self._try_initial_connect()
@@ -240,7 +252,7 @@ class VirtuosoGUI(QMainWindow):
         # --- Microphone ---
         mic_group = QGroupBox(_tr("Microphone"))
         mic_lay = QVBoxLayout()
-        
+
         mic_color_row = QHBoxLayout()
         self.mic_color_btn = QPushButton(_tr("Pick Color"))
         self.mic_color_btn.clicked.connect(self.choose_mic_color)
@@ -251,6 +263,24 @@ class VirtuosoGUI(QMainWindow):
         mic_color_row.addWidget(self.mic_color_preview)
         mic_color_row.addWidget(self.mic_color_btn)
         
+        # Colour the mic LED takes while muted (red on Windows, but yours).
+        mic_mute_color_row = QHBoxLayout()
+        self.mic_mute_color_btn = QPushButton(_tr("Pick Mute Color"))
+        self.mic_mute_color_btn.clicked.connect(self.choose_mic_mute_color)
+        self.mic_mute_color_preview = QLabel(" ")
+        self.mic_mute_color_preview.setFixedSize(30, 20)
+        self.mic_mute_color_preview.setStyleSheet(
+            "background-color: #ff0000; border: 1px solid black;")
+        mic_mute_color_row.addWidget(QLabel(_tr("Muted color:")))
+        mic_mute_color_row.addWidget(self.mic_mute_color_preview)
+        mic_mute_color_row.addWidget(self.mic_mute_color_btn)
+        mic_lay.addLayout(mic_mute_color_row)
+
+        self.mic_tone_cb = QCheckBox(_tr("Mute feedback sound"))
+        self.mic_tone_cb.setChecked(True)
+        self.mic_tone_cb.toggled.connect(self._save_settings)
+        mic_lay.addWidget(self.mic_tone_cb)
+
         mic_slider_row = QHBoxLayout()
         self.mic_slider = QSlider(Qt.Orientation.Horizontal)
         self.mic_slider.setRange(0, 100)
@@ -389,6 +419,12 @@ class VirtuosoGUI(QMainWindow):
 
 
 
+        # Mic state — informational only. The physical button is the control;
+        # an in-app toggle would desync it.
+        self.tray_mic_status = QAction(_tr("🎤 Mic: Active"), self)
+        self.tray_mic_status.setEnabled(False)
+        menu.addAction(self.tray_mic_status)
+
         # Toggle Sidetone (sincronizado con botón principal)
         self.tray_side_action = QAction(_tr("🔊 Sidetone: Enabled"), self)
         self.tray_side_action.setCheckable(True)
@@ -462,7 +498,7 @@ class VirtuosoGUI(QMainWindow):
         s = QSettings("VirtuosoControl", "VirtuosoControl")
 
         # Bloquear señales durante la carga
-        for w in (self.side_toggle,
+        for w in (self.side_toggle, self.mic_tone_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(True)
@@ -480,6 +516,12 @@ class VirtuosoGUI(QMainWindow):
 
         color_hex = s.value("rgb_color", "#ff0000", type=str)
         self._current_color = QColor(color_hex)
+
+        mute_hex = s.value("mic_mute_color", "#ff0000", type=str)
+        self._mic_mute_color = QColor(mute_hex)
+        self.mic_mute_color_preview.setStyleSheet(
+            f"background-color: {mute_hex}; border: 1px solid black;")
+        self.mic_tone_cb.setChecked(s.value("mic_tone", True, type=bool))
 
         mic_hex = s.value("mic_color", "#ff0000", type=str)
         self._current_mic_color = QColor(mic_hex)
@@ -500,7 +542,7 @@ class VirtuosoGUI(QMainWindow):
             self.side_toggle.setText(_tr("Disable Sidetone"))
 
         # Desbloquear señales
-        for w in (self.side_toggle,
+        for w in (self.side_toggle, self.mic_tone_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(False)
@@ -509,6 +551,8 @@ class VirtuosoGUI(QMainWindow):
         """Guarda las preferencias actuales."""
         s = QSettings("VirtuosoControl", "VirtuosoControl")
         s.setValue("mic_color", self._current_mic_color.name())
+        s.setValue("mic_mute_color", self._mic_mute_color.name())
+        s.setValue("mic_tone", self.mic_tone_cb.isChecked())
         s.setValue("mic_brightness", self.mic_slider.value())
 
         s.setValue("sidetone_muted", self.side_toggle.isChecked())
@@ -540,6 +584,7 @@ class VirtuosoGUI(QMainWindow):
         """Aplica las preferencias cargadas al hardware.
         Se llama después de _try_initial_connect()."""
         self.keep_alive_timer.start(20_000)
+        self._sync_mic_from_pw()  # before RGB, so the LED starts correct
         self._reapply_all_settings()
 
     # ─── Conexión HID ────────────────────────────────────────────────
@@ -637,6 +682,16 @@ class VirtuosoGUI(QMainWindow):
         self.apply_rgb()
         self._save_settings()
 
+    def choose_mic_mute_color(self):
+        color = QColorDialog.getColor(self._mic_mute_color, self,
+                                      _tr("Pick Mute Color"))
+        if color.isValid():
+            self._mic_mute_color = color
+            self.mic_mute_color_preview.setStyleSheet(
+                f"background-color: {color.name()}; border: 1px solid black;")
+            self.apply_rgb()  # visible immediately if currently muted
+            self._save_settings()
+
     def choose_mic_color(self):
         color = QColorDialog.getColor(self._current_mic_color, self, _tr("Pick Microphone Color"))
         if color.isValid():
@@ -658,11 +713,24 @@ class VirtuosoGUI(QMainWindow):
                 else:
                     batt_r = 255
 
+            # Muted mic goes red, matching iCUE on Windows/macOS. The saved
+            # colour is untouched and returns on unmute.
+            if self._mic_muted:
+                mic_rgb = (self._mic_mute_color.red(),
+                           self._mic_mute_color.green(),
+                           self._mic_mute_color.blue())
+                mic_brightness = 100
+            else:
+                mic_rgb = (self._current_mic_color.red(),
+                           self._current_mic_color.green(),
+                           self._current_mic_color.blue())
+                mic_brightness = self.mic_slider.value()
+
             self.ctrl.set_all_rgb(
-                (self._current_color.red(), self._current_color.green(), self._current_color.blue()), 
+                (self._current_color.red(), self._current_color.green(), self._current_color.blue()),
                 self.rgb_slider.value(),
-                (self._current_mic_color.red(), self._current_mic_color.green(), self._current_mic_color.blue()),
-                self.mic_slider.value(),
+                mic_rgb,
+                mic_brightness,
                 (batt_r, batt_g, batt_b),
                 100
             )
@@ -697,6 +765,47 @@ class VirtuosoGUI(QMainWindow):
         
         self.apply_rgb()
         self._save_settings()
+
+    # ─── Physical mic-mute button ────────────────────────────────────
+
+    def _poll_mic_button(self):
+        """Follows the headset's physical mic-mute button.
+
+        In software mode the firmware forwards the button instead of acting on
+        it, so the app has to do the muting and the LED. Deliberately one-way:
+        the headset is the source of truth and there is no in-app toggle, which
+        is what previously fought the button.
+        """
+        if not self._hid_connected:
+            return
+        presses = self.ctrl.poll_mic_button()
+        if presses % 2 == 0:
+            return  # no presses, or an even number that cancels out
+        self._apply_mic_mute(not self._mic_muted)
+
+    def _apply_mic_mute(self, muted):
+        """Applies a mute state coming from the headset button."""
+        self._mic_muted = muted
+        self.ctrl.set_mic_mute_pw(muted)
+        self.apply_rgb()          # mute colour while muted, saved colour otherwise
+        self._sync_mic_status()
+        # The firmware beeps on a mute change in hardware mode; in software
+        # mode it stays silent, so supply the cue ourselves.
+        if self.mic_tone_cb.isChecked():
+            self.ctrl.play_mic_tone(muted)
+
+    def _sync_mic_status(self):
+        """Updates the read-only mic indicator in the tray."""
+        if hasattr(self, "tray_mic_status"):
+            self.tray_mic_status.setText(
+                _tr("🎤 Mic: Muted") if self._mic_muted else _tr("🎤 Mic: Active"))
+
+    def _sync_mic_from_pw(self):
+        """Seeds our state from PipeWire so the LED matches at startup."""
+        state = self.ctrl.get_mic_muted_pw()
+        if state is not None:
+            self._mic_muted = state
+            self._sync_mic_status()
 
     # ─── Sidetone ────────────────────────────────────────────────────
 
@@ -869,6 +978,7 @@ class VirtuosoGUI(QMainWindow):
         self.keep_alive_timer.stop()
         self.reconnect_timer.stop()
         self.battery_timer.stop()
+        self.mic_button_timer.stop()
         self.ctrl.disconnect()
         QApplication.instance().quit()
 
