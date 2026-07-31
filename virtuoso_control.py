@@ -364,12 +364,12 @@ class VirtuosoController:
         try:
             with open("/proc/asound/cards", "r") as f:
                 for line in f:
-                    # Format: " 1 [Gaming         ]: USB-Audio - ..."
-                    if "Corsair" in line or "VIRTUOSO" in line or "Gaming" in line or "Hea" in line:
-                        if "[" in line and "]" in line:
-                            start = line.index("[") + 1
-                            end = line.index("]")
-                            self._alsa_card = line[start:end].strip()
+                    # Format: " 4 [Ga  ]: USB-Audio - CORSAIR VIRTUOSO SE Wireless Ga"
+                    low = line.lower()
+                    if "corsair" in low or "virtuoso" in low:
+                        index = line.split()[0]
+                        if index.isdigit():
+                            self._alsa_card = index
                             return self._alsa_card
         except Exception:
             pass
@@ -380,16 +380,16 @@ class VirtuosoController:
                 ["aplay", "-l"], capture_output=True, text=True, timeout=5
             )
             for line in result.stdout.splitlines():
-                if "Corsair" in line or "VIRTUOSO" in line:
-                    if "card" in line:
-                        parts = line.split(":")
-                        card_num = parts[0].strip().split()[-1]
+                low = line.lower()
+                if ("corsair" in low or "virtuoso" in low) and line.startswith("card "):
+                    card_num = line.split(":")[0].strip().split()[-1]
+                    if card_num.isdigit():
                         self._alsa_card = card_num
                         return self._alsa_card
         except Exception:
             pass
 
-        return "Gamin"  # Last resort
+        return None
 
     def set_sidetone(self, value):
         """Controls the sidetone via ALSA mixer.
@@ -401,6 +401,9 @@ class VirtuosoController:
             True if the command was executed successfully.
         """
         card = self._find_alsa_card()
+        if card is None:
+            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            return False
 
         try:
             if value == "on":
@@ -474,6 +477,9 @@ class VirtuosoController:
     def set_volume(self, value):
         """Adjusts the volume via ALSA mixer."""
         card = self._find_alsa_card()
+        if card is None:
+            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            return False
         try:
             val_str = f"{value}%" if "%" not in str(value) else str(value)
             result = subprocess.run(
