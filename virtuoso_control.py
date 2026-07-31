@@ -14,6 +14,7 @@ import subprocess
 VENDOR_ID = 0x1b1c
 PRODUCT_IDS = {
     # Wireless Dongles
+    0x0a3e: "Wireless",
     0x0a3f: "Wireless",
     0x0a42: "Wireless",
     0x0a4a: "Wireless",
