@@ -157,6 +157,8 @@ class VirtuosoGUI(QMainWindow):
         self.ctrl = VirtuosoController()
         self._hid_connected = False
         self._low_battery_notified = False
+        self._last_battery_percent = None
+        self._last_charging = False
 
         # Absolute path to icon
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -182,6 +184,12 @@ class VirtuosoGUI(QMainWindow):
         # Connect and apply saved preferences
         self._try_initial_connect()
         self._apply_saved_settings()
+
+        # First battery read. The battery timer above only fires after 5
+        # minutes, so without this the label sits at "--" until then or until
+        # the user hits Refresh. Deferred so the window paints first — the
+        # read blocks for up to ~1s.
+        QTimer.singleShot(1200, self._initial_battery_check)
 
     # ─── Interface ───────────────────────────────────────────────────
 
@@ -596,6 +604,7 @@ class VirtuosoGUI(QMainWindow):
             self.reconnect_timer.stop()
             self.keep_alive_timer.start(20_000)
             self._reapply_all_settings()
+            self._initial_battery_check()
 
     # ─── LED del micrófono ─────────────────────────────────────────
 
@@ -640,7 +649,7 @@ class VirtuosoGUI(QMainWindow):
         if self._hid_connected:
             # Battery LED state calculation
             batt_r, batt_g, batt_b = 0, 0, 0
-            if hasattr(self, '_last_battery_percent'):
+            if self._last_battery_percent is not None:
                 p = self._last_battery_percent
                 if p >= 80:
                     batt_g = 255
@@ -744,13 +753,25 @@ class VirtuosoGUI(QMainWindow):
         # Notificación de batería baja
         self._check_low_battery(battery_str)
 
+    def _initial_battery_check(self):
+        """Battery read right after startup or a reconnect.
+
+        Skipped in wired mode, where _update_status() has already put
+        "N/A (Wired)" in the label and the V2W battery query is unsupported.
+        """
+        if not self._hid_connected:
+            return
+        if "Wired" in self.ctrl.connection_mode:
+            return
+        self.check_battery()
+
     def _auto_battery_check(self):
         """Periodic auto-check. Only if handshake is done
         (to avoid triggering handshake and turning off the LED accidentally)."""
         if self._hid_connected and self.ctrl._handshake_done:
             # Smart Battery Polling: 
             # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
-            if hasattr(self, '_last_battery_percent') and self._last_battery_percent < 15:
+            if self._last_battery_percent is not None and self._last_battery_percent < 15:
                 if not self.ctrl.is_usb_charging:
                     # Keep showing low battery, don't query headset
                     return

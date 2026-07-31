@@ -35,6 +35,14 @@ EP_HEADSET = 0x09   # Auriculares
 CMD_GET = 0x01
 CMD_SET = 0x02
 
+# Asynchronous status notification the headset pushes when a value changes:
+#   [0x03, 0x01, 0x01, opcode, 0x00, lo, hi]
+# Note the payload sits one byte later than in a query reply, which is
+#   [0x01, 0x01, 0x02, 0x00, lo, hi]
+NOTIFY_STATUS = (0x03, 0x01, 0x01)
+OP_BATTERY = 0x0f
+OP_CHARGE = 0x10   # 1 = charging, 2 = discharging
+
 
 class VirtuosoController:
     """Persistent controller for Corsair Virtuoso SE.
@@ -50,6 +58,8 @@ class VirtuosoController:
         self._connected = False
         self._handshake_done = False
         self._alsa_card = None  # ALSA card name cache
+        self._last_level = None      # previous battery reading
+        self._charging_inferred = False
         self._brightness = 100  # Current brightness (0-100), max by default
         self._mic_led = True    # Current state of the Mic LED
         self.connection_mode = "Unknown"
@@ -295,6 +305,42 @@ class VirtuosoController:
             pass
         return False
 
+    def get_charging(self):
+        """Queries the headset's charge state over V2W (opcode 0x10).
+
+        Returns True if charging, False if discharging, None if unanswered.
+
+        Found by capturing the notification the headset pushes when the cable
+        is connected or removed; the same opcode answers a direct query.
+        1 = charging, 2 = discharging.
+
+        Unlike is_usb_charging this works with ANY power source — a wall
+        charger or power bank never appears on this machine's USB bus, so
+        enumeration cannot see it, but the headset knows and will say so.
+        """
+        if not self.is_connected or not self._handshake_done:
+            return None
+
+        for _ in range(3):
+            self._flush_buffer()
+            if not self._send_v2w(EP_HEADSET, CMD_SET, [OP_CHARGE]):
+                return None
+            for _ in range(8):
+                time.sleep(0.05)
+                try:
+                    res = self.device.read(64)
+                except Exception:
+                    self._connected = False
+                    return None
+                if res and len(res) > 5 and res[0] == 0x01:
+                    # Query reply: payload at [4]/[5]
+                    val = (res[5] << 8) | res[4]
+                    if val in (1, 2):
+                        return val == 1
+                    # Stale packet (the first read after idle is junk) — keep
+                    # draining rather than abandoning this attempt.
+        return None
+
     def get_battery(self):
         """Reads the battery level of the headset.
 
@@ -310,7 +356,7 @@ class VirtuosoController:
         usb_charging = self.is_usb_charging
 
         valid_percents = []
-        last_status = "Discharging"
+        hw_charging = False
 
         # We perform the check 3 consecutive times. 
         # Sometimes the first packet after a period of inactivity 
@@ -329,34 +375,58 @@ class VirtuosoController:
 
                 if res and len(res) > 5:
                     raw_val = (res[5] << 8) | res[4]
-                    if raw_val == 0:
+                    # 0 is an empty slot; anything over 1000 (=100%) is the
+                    # stale first packet after idle. Capping it instead of
+                    # rejecting it is what produced the phantom 100% readings.
+                    if raw_val == 0 or raw_val > 1000:
                         continue
-                        
-                    percent = min(raw_val // 10, 100)
-                    status_byte = res[3]
-                    
-                    if usb_charging or status_byte in [4, 5]:
-                        status = "Charging"
-                    else:
-                        status = "Discharging"
-                    
-                    valid_percents.append(percent)
-                    last_status = status
+
+                    valid_percents.append(raw_val // 10)
+                    if res[3] in (4, 5):
+                        hw_charging = True
                     break
-        
-        if valid_percents:
-            # Return the last reading, which is the most stable
-            return f"{valid_percents[-1]}% [{last_status}]"
-                
-        return "No response (try again)"
+
+        if not valid_percents:
+            return "No response (try again)"
+
+        # Last reading is the most stable
+        level = valid_percents[-1]
+
+        # Trend is kept only as a last resort if the query goes unanswered.
+        if self._last_level is not None:
+            if level > self._last_level:
+                self._charging_inferred = True
+            elif level < self._last_level:
+                self._charging_inferred = False
+        self._last_level = level
+
+        # Charge state, in order of reliability:
+        #   1. the headset's own answer (opcode 0x10) — authoritative, and the
+        #      only one that sees a wall charger or power bank
+        #   2. a wired Corsair PID on the bus — only when charging from this PC
+        #   3. res[3] in (4, 5) — never set by this firmware, kept for models
+        #      that do report it
+        #   4. the level trending upward
+        charging = self.get_charging()
+        if charging is None:
+            charging = usb_charging or hw_charging or self._charging_inferred
+
+        return f"{level}% [{'Charging' if charging else 'Discharging'}]"
 
     # ─── Sidetone (ALSA) ─────────────────────────────────────────────
 
     def _find_alsa_card(self):
-        """Dynamically finds the ALSA card name for the Corsair headset.
+        """Dynamically finds the ALSA card index for the Corsair headset.
 
-        Searches /proc/asound/cards for the Corsair device and returns
-        its short name (the one in brackets).
+        Matches ONLY on Corsair/Virtuoso identifiers. Generic words like
+        "Gaming" or "Hea" also match unrelated USB audio devices — e.g. a
+        "G560 Gaming Speaker" enumerating on a lower card index would win
+        the scan and every amixer command would be sent to the speakers.
+
+        Returns:
+            The card index as a string, or None if the headset is not found.
+            Callers must treat None as "do not run amixer" — guessing a card
+            sends mixer commands to somebody else's hardware.
         """
         if self._alsa_card:
             return self._alsa_card
