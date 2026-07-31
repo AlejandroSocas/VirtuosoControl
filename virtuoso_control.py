@@ -152,6 +152,11 @@ class VirtuosoController:
 
         Same opcode as the software-mode command in _do_handshake(), with 0x01
         in place of 0x02.
+
+        The receiver release below is now redundant -- _do_handshake() no longer
+        puts the receiver into software mode -- but it is kept as a repair path:
+        software mode survives closing the handle and even replugging the app,
+        so this recovers a dongle left dark by an older build or a crashed run.
         """
         if not self.device:
             return False
@@ -235,17 +240,27 @@ class VirtuosoController:
 
         Based on HeadsetControl implementation (corsair_void_v2w.hpp):
         1. Request firmware from receiver
-        2. Enable software mode on receiver
+        2. (skipped -- see below) software mode on receiver
         3. Heartbeat to receiver
         4. Enable software mode on headset
         5. Clean buffer
         6. Heartbeat to headset
+
+        HeadsetControl's step 2 puts the *receiver* into software mode as well,
+        which switches the dongle's own status LED off for as long as the mode
+        is held -- the same hand-over that kills the mic-mute button on the
+        headset. Nothing here drives the dongle LED, so it just stays dark.
+
+        Verified on a Virtuoso SE (PID 0x0a3e, freshly power-cycled): with this
+        step omitted, battery queries and set_all_rgb() both still work and the
+        dongle LED stays lit. Only the headset needs software mode. If a future
+        model turns out to need the receiver in software mode for LED control,
+        this is the line to restore.
         """
         # 1. Firmware request to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x13])
 
-        # 2. Software mode to receiver
-        self._send_v2w(EP_RECEIVER, CMD_GET, [0x03, 0x00, 0x02])
+        # 2. Software mode to receiver -- intentionally NOT sent, see docstring
 
         # 3. Heartbeat to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x12])
