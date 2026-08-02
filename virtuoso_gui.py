@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
                              QGroupBox, QSystemTrayIcon, QMenu, QCheckBox,
                              QRadioButton, QButtonGroup, QColorDialog, QDialog, QComboBox)
-from PyQt6.QtCore import Qt, QTimer, QSettings, QRect
+from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen
 from virtuoso_control import VirtuosoController
 
@@ -70,6 +70,16 @@ TRANSLATIONS = {
         "Pick Microphone Color": "Elegir Color del Micrófono",
         "🔊 Sidetone: Enabled": "🔊 Sidetone: Activado",
         "🔇 Sidetone: Disabled": "🔇 Sidetone: Desactivado",
+        "🎤 Mic: Active": "🎤 Micrófono: Activo",
+        "🎤 Mic: Muted": "🎤 Micrófono: Silenciado",
+        "Muted color:": "Color silenciado:",
+        "Pick Mute Color": "Elegir Color Silenciado",
+        "Mute feedback sound": "Sonido al silenciar",
+        "Turn off when closing the app": "Apagar al cerrar la aplicación",
+        "Tray icon:": "Icono de bandeja:",
+        "Virtuoso icon": "Icono de Virtuoso",
+        "Battery icon": "Icono de batería",
+        "Both": "Ambos",
         "Profile Saved": "Perfil Guardado",
         "Error": "Error",
         "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
@@ -87,12 +97,19 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_tr("Settings"))
-        self.setFixedSize(300, 200)
+        self.setFixedSize(300, 230)
         
         layout = QVBoxLayout(self)
         
         self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
         self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
+        tray_layout = QHBoxLayout()
+        tray_layout.addWidget(QLabel(_tr("Tray icon:")))
+        self.tray_mode_combo = QComboBox()
+        self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
+        self.tray_mode_combo.addItem(_tr("Battery icon"), "battery")
+        self.tray_mode_combo.addItem(_tr("Both"), "both")
+        tray_layout.addWidget(self.tray_mode_combo)
         
         lang_layout = QHBoxLayout()
         lang_layout.addWidget(QLabel(_tr("Language (requires restart):")))
@@ -103,6 +120,7 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(self.autostart_cb)
         layout.addWidget(self.minimized_cb)
+        layout.addLayout(tray_layout)
         layout.addLayout(lang_layout)
         layout.addStretch()
         
@@ -122,6 +140,10 @@ class SettingsDialog(QDialog):
     def load_settings(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
+        mode = s.value("tray_icon_mode", "virtuoso", type=str)
+        idx = self.tray_mode_combo.findData(mode)
+        if idx >= 0:
+            self.tray_mode_combo.setCurrentIndex(idx)
         
         lang = s.value("language", "en", type=str)
         index = self.lang_combo.findData(lang)
@@ -135,6 +157,7 @@ class SettingsDialog(QDialog):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         s.setValue("start_minimized", self.minimized_cb.isChecked())
         s.setValue("language", self.lang_combo.currentData())
+        s.setValue("tray_icon_mode", self.tray_mode_combo.currentData())
         
         autostart_dir = os.path.expanduser("~/.config/autostart")
         autostart_path = os.path.join(autostart_dir, "virtuoso-control.desktop")
@@ -157,6 +180,13 @@ class VirtuosoGUI(QMainWindow):
         self.ctrl = VirtuosoController()
         self._hid_connected = False
         self._low_battery_notified = False
+        self._mic_muted = False  # mirrors the headset's reported mute state
+        self._quitting = False
+        self._last_battery_percent = None
+        self._last_charging = False
+        self.batt_tray_icon = None  # optional standalone battery indicator
+        self.batt_menu = None
+        self._tray_mode = "virtuoso"
 
         # Absolute path to icon
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -179,15 +209,28 @@ class VirtuosoGUI(QMainWindow):
         self.battery_timer.timeout.connect(self._auto_battery_check)
         self.battery_timer.start(300_000)
 
+        # Timer: physical mic-mute button. Cheap — a non-blocking HID read
+        # that returns immediately when nothing is pending.
+        self.mic_button_timer = QTimer()
+        self.mic_button_timer.timeout.connect(self._poll_mic_button)
+        self.mic_button_timer.start(150)
+
         # Connect and apply saved preferences
         self._try_initial_connect()
         self._apply_saved_settings()
+
+        # First battery read. The battery timer above only fires after 5
+        # minutes, so without this the label sits at "--" until then or until
+        # the user hits Refresh. Deferred so the window paints first — the
+        # read blocks for up to ~1s.
+        QTimer.singleShot(1200, self._initial_battery_check)
 
     # ─── Interface ───────────────────────────────────────────────────
 
     def open_settings(self):
         dlg = SettingsDialog(self)
-        dlg.exec()
+        if dlg.exec():
+            self._setup_tray_icons()  # applies without a restart
 
     def init_ui(self):
         self.setWindowTitle("Virtuoso Control")
@@ -232,7 +275,7 @@ class VirtuosoGUI(QMainWindow):
         # --- Microphone ---
         mic_group = QGroupBox(_tr("Microphone"))
         mic_lay = QVBoxLayout()
-        
+
         mic_color_row = QHBoxLayout()
         self.mic_color_btn = QPushButton(_tr("Pick Color"))
         self.mic_color_btn.clicked.connect(self.choose_mic_color)
@@ -243,6 +286,24 @@ class VirtuosoGUI(QMainWindow):
         mic_color_row.addWidget(self.mic_color_preview)
         mic_color_row.addWidget(self.mic_color_btn)
         
+        # Colour the mic LED takes while muted (red on Windows, but yours).
+        mic_mute_color_row = QHBoxLayout()
+        self.mic_mute_color_btn = QPushButton(_tr("Pick Mute Color"))
+        self.mic_mute_color_btn.clicked.connect(self.choose_mic_mute_color)
+        self.mic_mute_color_preview = QLabel(" ")
+        self.mic_mute_color_preview.setFixedSize(30, 20)
+        self.mic_mute_color_preview.setStyleSheet(
+            "background-color: #ff0000; border: 1px solid black;")
+        mic_mute_color_row.addWidget(QLabel(_tr("Muted color:")))
+        mic_mute_color_row.addWidget(self.mic_mute_color_preview)
+        mic_mute_color_row.addWidget(self.mic_mute_color_btn)
+        mic_lay.addLayout(mic_mute_color_row)
+
+        self.mic_tone_cb = QCheckBox(_tr("Mute feedback sound"))
+        self.mic_tone_cb.setChecked(True)
+        self.mic_tone_cb.toggled.connect(self._save_settings)
+        mic_lay.addWidget(self.mic_tone_cb)
+
         mic_slider_row = QHBoxLayout()
         self.mic_slider = QSlider(Qt.Orientation.Horizontal)
         self.mic_slider.setRange(0, 100)
@@ -348,6 +409,11 @@ class VirtuosoGUI(QMainWindow):
         side_slider_row.addWidget(self.side_slider)
         side_slider_row.addWidget(self.side_label)
 
+        self.side_exit_cb = QCheckBox(_tr("Turn off when closing the app"))
+        self.side_exit_cb.setChecked(True)
+        self.side_exit_cb.toggled.connect(self._save_settings)
+        side_lay.addWidget(self.side_exit_cb)
+
         side_lay.addWidget(self.side_toggle)
         side_lay.addWidget(QLabel(_tr("Level:")))
         side_lay.addLayout(side_slider_row)
@@ -380,6 +446,12 @@ class VirtuosoGUI(QMainWindow):
         menu = QMenu()
 
 
+
+        # Mic state — informational only. The physical button is the control;
+        # an in-app toggle would desync it.
+        self.tray_mic_status = QAction(_tr("🎤 Mic: Active"), self)
+        self.tray_mic_status.setEnabled(False)
+        menu.addAction(self.tray_mic_status)
 
         # Toggle Sidetone (sincronizado con botón principal)
         self.tray_side_action = QAction(_tr("🔊 Sidetone: Enabled"), self)
@@ -419,9 +491,103 @@ class VirtuosoGUI(QMainWindow):
         exit_action.triggered.connect(self.quit_app)
         menu.addAction(exit_action)
 
+        self.tray_menu = menu  # keep a reference alongside Qt's ownership
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.activated.connect(self.tray_icon_activated)
-        self.tray_icon.show()
+
+        # Registers the battery icon before the main one so battery sits on
+        # the left, and shows the main icon itself.
+        self._setup_tray_icons()
+
+        # The action label above is hardcoded to the enabled wording, so push
+        # the state loaded from QSettings onto it now.
+        self._sync_tray_sidetone()
+
+    def _setup_tray_icons(self):
+        """Applies the tray icon mode.
+
+        virtuoso — one icon, the app logo, no battery gauge (default)
+        battery  — one icon, the battery gauge drawn onto it
+        both     — app logo plus a second, battery-only icon
+
+        Ordering note: trays generally order icons by registration, so the
+        battery icon is shown before the main one (see init_tray) to place it
+        on the left. Switching to "both" at runtime cannot reorder an icon that
+        is already registered — that needs a restart.
+        """
+        s = QSettings("AlejandroSocas", "VirtuosoControl")
+        self._tray_mode = s.value("tray_icon_mode", "virtuoso", type=str)
+        if self._tray_mode not in ("virtuoso", "battery", "both"):
+            self._tray_mode = "virtuoso"
+
+        if self._tray_mode == "both" and self.batt_tray_icon is None:
+            self.batt_tray_icon = QSystemTrayIcon(self)
+            self.batt_tray_icon.setIcon(QIcon(self.icon_path))
+
+            # Its OWN menu on purpose: setContextMenu() transfers ownership in
+            # PyQt, so handing it the main icon's menu destroys that menu along
+            # with this icon and leaves the main icon pointing at freed memory.
+            self.batt_menu = QMenu()
+            act_refresh = QAction(_tr("Refresh"), self)
+            act_refresh.triggered.connect(self.check_battery)
+            act_open = QAction(_tr("Open"), self)
+            act_open.triggered.connect(self.show)
+            act_quit = QAction(_tr("Quit"), self)
+            act_quit.triggered.connect(self.quit_app)
+            for a in (act_refresh, act_open, act_quit):
+                self.batt_menu.addAction(a)
+            self.batt_tray_icon.setContextMenu(self.batt_menu)
+            self.batt_tray_icon.activated.connect(self._batt_tray_activated)
+
+        # Toggled by visibility rather than destroyed — recreating tray icons
+        # is what caused the ownership crash above.
+        if self._tray_mode == "both":
+            # The tray assigns a position when an icon registers and never
+            # reorders it, so showing the battery icon later always lands it on
+            # the right. Re-register the main icon *behind* it instead.
+            #
+            # Battery is shown FIRST for a second reason: hiding the last
+            # visible tray icon terminates the application, even with
+            # setQuitOnLastWindowClosed(False). Keeping the battery icon up
+            # means the main icon is never the last one when it is withdrawn.
+            self.batt_tray_icon.setVisible(True)
+            if self.tray_icon.isVisible():
+                self.tray_icon.hide()
+                # Deferred so the tray processes the removal before re-adding.
+                QTimer.singleShot(120, self.tray_icon.show)
+            else:
+                self.tray_icon.show()
+        else:
+            if self.batt_tray_icon is not None:
+                self.batt_tray_icon.setVisible(False)
+            self.tray_icon.show()
+
+        if self._tray_mode != "battery":
+            self.tray_icon.setIcon(QIcon(self.icon_path))
+
+        self._refresh_battery_icon()
+
+    def _batt_tray_activated(self, reason):
+        """Left-clicking the battery icon refreshes the reading."""
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.check_battery()
+
+    def _refresh_battery_icon(self):
+        """Draws the battery gauge onto whichever icon owns it in this mode."""
+        if self._tray_mode == "virtuoso":
+            self.tray_icon.setIcon(QIcon(self.icon_path))
+            return
+
+        if self._last_battery_percent is None:
+            icon = QIcon(self.icon_path)
+        else:
+            icon = self._generate_battery_icon(self._last_battery_percent,
+                                               self._last_charging)
+
+        if self._tray_mode == "both" and self.batt_tray_icon is not None:
+            self.batt_tray_icon.setIcon(icon)
+        else:
+            self.tray_icon.setIcon(icon)
 
     def tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -454,7 +620,7 @@ class VirtuosoGUI(QMainWindow):
         s = QSettings("VirtuosoControl", "VirtuosoControl")
 
         # Bloquear señales durante la carga
-        for w in (self.side_toggle,
+        for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(True)
@@ -472,6 +638,13 @@ class VirtuosoGUI(QMainWindow):
 
         color_hex = s.value("rgb_color", "#ff0000", type=str)
         self._current_color = QColor(color_hex)
+
+        mute_hex = s.value("mic_mute_color", "#ff0000", type=str)
+        self._mic_mute_color = QColor(mute_hex)
+        self.mic_mute_color_preview.setStyleSheet(
+            f"background-color: {mute_hex}; border: 1px solid black;")
+        self.mic_tone_cb.setChecked(s.value("mic_tone", True, type=bool))
+        self.side_exit_cb.setChecked(s.value("sidetone_off_on_exit", True, type=bool))
 
         mic_hex = s.value("mic_color", "#ff0000", type=str)
         self._current_mic_color = QColor(mic_hex)
@@ -492,7 +665,7 @@ class VirtuosoGUI(QMainWindow):
             self.side_toggle.setText(_tr("Disable Sidetone"))
 
         # Desbloquear señales
-        for w in (self.side_toggle,
+        for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
                   self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
             w.blockSignals(False)
@@ -501,6 +674,9 @@ class VirtuosoGUI(QMainWindow):
         """Guarda las preferencias actuales."""
         s = QSettings("VirtuosoControl", "VirtuosoControl")
         s.setValue("mic_color", self._current_mic_color.name())
+        s.setValue("mic_mute_color", self._mic_mute_color.name())
+        s.setValue("mic_tone", self.mic_tone_cb.isChecked())
+        s.setValue("sidetone_off_on_exit", self.side_exit_cb.isChecked())
         s.setValue("mic_brightness", self.mic_slider.value())
 
         s.setValue("sidetone_muted", self.side_toggle.isChecked())
@@ -532,6 +708,7 @@ class VirtuosoGUI(QMainWindow):
         """Aplica las preferencias cargadas al hardware.
         Se llama después de _try_initial_connect()."""
         self.keep_alive_timer.start(20_000)
+        self._sync_mic_from_pw()  # before RGB, so the LED starts correct
         self._reapply_all_settings()
 
     # ─── Conexión HID ────────────────────────────────────────────────
@@ -563,8 +740,9 @@ class VirtuosoGUI(QMainWindow):
             if is_wired:
                 self.batt_label.setText(_tr("🔋 Battery: N/A (Wired)"))
                 self.tray_batt_action.setText(_tr("🔋 Battery: N/A (Wired)"))
-                self.tray_icon.setIcon(QIcon(self.icon_path))
-                
+                self._last_battery_percent = None
+                self._refresh_battery_icon()
+
         else:
             self.status_label.setText(_tr("🔴 Disconnected — Searching for device..."))
             self.status_label.setStyleSheet(
@@ -574,7 +752,8 @@ class VirtuosoGUI(QMainWindow):
             self.mic_slider.setDisabled(True)
             self.rgb_color_btn.setDisabled(True)
             self.rgb_slider.setDisabled(True)
-            self.tray_icon.setIcon(QIcon(self.icon_path))
+            self._last_battery_percent = None
+            self._refresh_battery_icon()
 
     def _on_connection_lost(self):
         self._hid_connected = False
@@ -596,6 +775,7 @@ class VirtuosoGUI(QMainWindow):
             self.reconnect_timer.stop()
             self.keep_alive_timer.start(20_000)
             self._reapply_all_settings()
+            self._initial_battery_check()
 
     # ─── LED del micrófono ─────────────────────────────────────────
 
@@ -628,6 +808,16 @@ class VirtuosoGUI(QMainWindow):
         self.apply_rgb()
         self._save_settings()
 
+    def choose_mic_mute_color(self):
+        color = QColorDialog.getColor(self._mic_mute_color, self,
+                                      _tr("Pick Mute Color"))
+        if color.isValid():
+            self._mic_mute_color = color
+            self.mic_mute_color_preview.setStyleSheet(
+                f"background-color: {color.name()}; border: 1px solid black;")
+            self.apply_rgb()  # visible immediately if currently muted
+            self._save_settings()
+
     def choose_mic_color(self):
         color = QColorDialog.getColor(self._current_mic_color, self, _tr("Pick Microphone Color"))
         if color.isValid():
@@ -640,7 +830,7 @@ class VirtuosoGUI(QMainWindow):
         if self._hid_connected:
             # Battery LED state calculation
             batt_r, batt_g, batt_b = 0, 0, 0
-            if hasattr(self, '_last_battery_percent'):
+            if self._last_battery_percent is not None:
                 p = self._last_battery_percent
                 if p >= 80:
                     batt_g = 255
@@ -649,11 +839,24 @@ class VirtuosoGUI(QMainWindow):
                 else:
                     batt_r = 255
 
+            # Muted mic goes red, matching iCUE on Windows/macOS. The saved
+            # colour is untouched and returns on unmute.
+            if self._mic_muted:
+                mic_rgb = (self._mic_mute_color.red(),
+                           self._mic_mute_color.green(),
+                           self._mic_mute_color.blue())
+                mic_brightness = 100
+            else:
+                mic_rgb = (self._current_mic_color.red(),
+                           self._current_mic_color.green(),
+                           self._current_mic_color.blue())
+                mic_brightness = self.mic_slider.value()
+
             self.ctrl.set_all_rgb(
-                (self._current_color.red(), self._current_color.green(), self._current_color.blue()), 
+                (self._current_color.red(), self._current_color.green(), self._current_color.blue()),
                 self.rgb_slider.value(),
-                (self._current_mic_color.red(), self._current_mic_color.green(), self._current_mic_color.blue()),
-                self.mic_slider.value(),
+                mic_rgb,
+                mic_brightness,
                 (batt_r, batt_g, batt_b),
                 100
             )
@@ -688,6 +891,47 @@ class VirtuosoGUI(QMainWindow):
         
         self.apply_rgb()
         self._save_settings()
+
+    # ─── Physical mic-mute button ────────────────────────────────────
+
+    def _poll_mic_button(self):
+        """Follows the headset's physical mic-mute button.
+
+        In software mode the firmware forwards the button instead of acting on
+        it, so the app has to do the muting and the LED. Deliberately one-way:
+        the headset is the source of truth and there is no in-app toggle, which
+        is what previously fought the button.
+        """
+        if not self._hid_connected:
+            return
+        presses = self.ctrl.poll_mic_button()
+        if presses % 2 == 0:
+            return  # no presses, or an even number that cancels out
+        self._apply_mic_mute(not self._mic_muted)
+
+    def _apply_mic_mute(self, muted):
+        """Applies a mute state coming from the headset button."""
+        self._mic_muted = muted
+        self.ctrl.set_mic_mute_pw(muted)
+        self.apply_rgb()          # mute colour while muted, saved colour otherwise
+        self._sync_mic_status()
+        # The firmware beeps on a mute change in hardware mode; in software
+        # mode it stays silent, so supply the cue ourselves.
+        if self.mic_tone_cb.isChecked():
+            self.ctrl.play_mic_tone(muted)
+
+    def _sync_mic_status(self):
+        """Updates the read-only mic indicator in the tray."""
+        if hasattr(self, "tray_mic_status"):
+            self.tray_mic_status.setText(
+                _tr("🎤 Mic: Muted") if self._mic_muted else _tr("🎤 Mic: Active"))
+
+    def _sync_mic_from_pw(self):
+        """Seeds our state from PipeWire so the LED matches at startup."""
+        state = self.ctrl.get_mic_muted_pw()
+        if state is not None:
+            self._mic_muted = state
+            self._sync_mic_status()
 
     # ─── Sidetone ────────────────────────────────────────────────────
 
@@ -744,13 +988,25 @@ class VirtuosoGUI(QMainWindow):
         # Notificación de batería baja
         self._check_low_battery(battery_str)
 
+    def _initial_battery_check(self):
+        """Battery read right after startup or a reconnect.
+
+        Skipped in wired mode, where _update_status() has already put
+        "N/A (Wired)" in the label and the V2W battery query is unsupported.
+        """
+        if not self._hid_connected:
+            return
+        if "Wired" in self.ctrl.connection_mode:
+            return
+        self.check_battery()
+
     def _auto_battery_check(self):
         """Periodic auto-check. Only if handshake is done
         (to avoid triggering handshake and turning off the LED accidentally)."""
         if self._hid_connected and self.ctrl._handshake_done:
             # Smart Battery Polling: 
             # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
-            if hasattr(self, '_last_battery_percent') and self._last_battery_percent < 15:
+            if self._last_battery_percent is not None and self._last_battery_percent < 15:
                 if not self.ctrl.is_usb_charging:
                     # Keep showing low battery, don't query headset
                     return
@@ -807,15 +1063,18 @@ class VirtuosoGUI(QMainWindow):
         self.batt_label.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_batt_action.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_icon.setToolTip(f"Virtuoso Control — {battery_str}")
-        
-        # Dynamic Tray Icon
+        if self.batt_tray_icon is not None:
+            self.batt_tray_icon.setToolTip(f"🔋 {_tr('Battery')}: {battery_str}")
+
         try:
-            percent_str = battery_str.split("%")[0]
-            percent = int(percent_str)
-            is_charging = _tr("Charging") in battery_str or "Cargando" in battery_str or "Charging" in battery_str
-            self.tray_icon.setIcon(self._generate_battery_icon(percent, is_charging))
-        except:
-            self.tray_icon.setIcon(QIcon(self.icon_path))
+            self._last_battery_percent = int(battery_str.split("%")[0])
+            self._last_charging = (_tr("Charging") in battery_str
+                                   or "Cargando" in battery_str
+                                   or "Charging" in battery_str)
+        except (ValueError, IndexError):
+            self._last_battery_percent = None
+            self._last_charging = False
+        self._refresh_battery_icon()
 
     def _check_low_battery(self, battery_str):
         """Shows desktop notification if battery < 15%."""
@@ -844,10 +1103,28 @@ class VirtuosoGUI(QMainWindow):
         self.hide()
 
     def quit_app(self):
+        """Shuts down cleanly. Idempotent — see the guard below.
+
+        __main__ wires this to app.aboutToQuit *and* the tray Quit action, and
+        it calls quit() itself, so without the guard it re-enters via
+        aboutToQuit until Python's recursion limit trips — roughly 14 seconds
+        of teardown work repeated at every level before the app finally exits.
+        """
+        if self._quitting:
+            return
+        self._quitting = True
+
         self._save_settings()
         self.keep_alive_timer.stop()
         self.reconnect_timer.stop()
         self.battery_timer.stop()
+        self.mic_button_timer.stop()
+
+        # Sidetone is a mixer setting: it survives the app. Turn it off on the
+        # way out so it cannot be left on with no UI around to switch it off.
+        if self.side_exit_cb.isChecked() and not self.side_toggle.isChecked():
+            self._apply_sidetone(0 if self.side_v2w_radio.isChecked() else "off")
+
         self.ctrl.disconnect()
         QApplication.instance().quit()
 

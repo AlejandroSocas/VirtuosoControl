@@ -7,13 +7,18 @@ persistent (like iCUE), preventing USB disconnections caused by
 the previous open/close pattern for each command.
 """
 import hid
-import time
-import sys
+import math
+import os
+import struct
 import subprocess
+import sys
+import time
+import wave
 
 VENDOR_ID = 0x1b1c
 PRODUCT_IDS = {
     # Wireless Dongles
+    0x0a3e: "Wireless",
     0x0a3f: "Wireless",
     0x0a42: "Wireless",
     0x0a4a: "Wireless",
@@ -34,6 +39,22 @@ EP_HEADSET = 0x09   # Auriculares
 CMD_GET = 0x01
 CMD_SET = 0x02
 
+# Notification pushed by the headset when the physical mic-mute button is
+# pressed while in software mode: [0x03, 0x01, 0x02, down].
+# Captured from the control interface — the button reports key DOWN (1) and
+# key UP (0) roughly 100-200ms apart, it does NOT report a mute state. Act on
+# the down edge only; treating the value as a state mutes on press and unmutes
+# on release.
+MIC_BUTTON_REPORT = (0x03, 0x01, 0x02)
+
+# Asynchronous status notification the headset pushes when a value changes:
+#   [0x03, 0x01, 0x01, opcode, 0x00, lo, hi]
+# Note the payload sits one byte later than in a query reply, which is
+#   [0x01, 0x01, 0x02, 0x00, lo, hi]
+NOTIFY_STATUS = (0x03, 0x01, 0x01)
+OP_BATTERY = 0x0f
+OP_CHARGE = 0x10   # 1 = charging, 2 = discharging
+
 
 class VirtuosoController:
     """Persistent controller for Corsair Virtuoso SE.
@@ -49,6 +70,11 @@ class VirtuosoController:
         self._connected = False
         self._handshake_done = False
         self._alsa_card = None  # ALSA card name cache
+        self._pw_source = None  # PipeWire source name cache
+        self._pw_sink = None    # PipeWire sink name cache
+        self._pending_press = False  # button press seen while flushing
+        self._last_level = None      # previous battery reading
+        self._charging_inferred = False
         self._brightness = 100  # Current brightness (0-100), max by default
         self._mic_led = True    # Current state of the Mic LED
         self.connection_mode = "Unknown"
@@ -118,9 +144,43 @@ class VirtuosoController:
         self._handshake_done = True
         return True
 
+    def _leave_software_mode(self):
+        """Hands the headset back to firmware control.
+
+        _do_handshake() puts the headset into *software* mode, where the
+        firmware stops handling the physical mic-mute button and expects host
+        software (iCUE on Windows) to do it instead. Nothing here handles that
+        button, so while we hold the headset in software mode the button does
+        nothing — and because closing the HID handle does not undo the mode
+        switch, it stays dead after the app exits until the headset is
+        power-cycled.
+
+        Same opcode as the software-mode command in _do_handshake(), with 0x01
+        in place of 0x02.
+
+        The receiver release below is now redundant -- _do_handshake() no longer
+        puts the receiver into software mode -- but it is kept as a repair path:
+        software mode survives closing the handle and even replugging the app,
+        so this recovers a dongle left dark by an older build or a crashed run.
+        """
+        if not self.device:
+            return False
+        ok = self._send_v2w(EP_RECEIVER, CMD_GET, [0x03, 0x00, 0x01])
+        time.sleep(0.05)
+        ok = self._send_v2w(EP_HEADSET, CMD_GET, [0x03, 0x00, 0x01]) and ok
+        time.sleep(0.05)
+        return ok
+
     def disconnect(self):
         """Closes the HID connection. Only call when closing the app."""
         if self.device:
+            # Give the mic-mute button back before dropping the handle.
+            # Only meaningful if we actually entered software mode.
+            if self._handshake_done:
+                try:
+                    self._leave_software_mode()
+                except Exception:
+                    pass
             try:
                 self.device.close()
             except Exception:
@@ -133,6 +193,8 @@ class VirtuosoController:
         """Reconnects to the device (e.g. if connection was lost)."""
         self.disconnect()
         self._alsa_card = None  # Invalidate ALSA card cache
+        self._pw_source = None
+        self._pw_sink = None
         time.sleep(0.5)  # Give USB subsystem time
         return self.connect()
 
@@ -159,7 +221,12 @@ class VirtuosoController:
             return False
 
     def _flush_buffer(self):
-        """Flushes the HID buffer of leftover data."""
+        """Flushes the HID buffer of leftover data.
+
+        Mic-button presses are stashed rather than dropped: a battery read
+        flushes first, and without this a press landing just before it would be
+        silently lost.
+        """
         if not self.device:
             return
         for _ in range(20):
@@ -167,6 +234,8 @@ class VirtuosoController:
                 data = self.device.read(64)
                 if not data:
                     break
+                if len(data) > 3 and tuple(data[:3]) == MIC_BUTTON_REPORT and data[3]:
+                    self._pending_press = True
             except Exception:
                 break
             time.sleep(0.005)
@@ -176,17 +245,27 @@ class VirtuosoController:
 
         Based on HeadsetControl implementation (corsair_void_v2w.hpp):
         1. Request firmware from receiver
-        2. Enable software mode on receiver
+        2. (skipped -- see below) software mode on receiver
         3. Heartbeat to receiver
         4. Enable software mode on headset
         5. Clean buffer
         6. Heartbeat to headset
+
+        HeadsetControl's step 2 puts the *receiver* into software mode as well,
+        which switches the dongle's own status LED off for as long as the mode
+        is held -- the same hand-over that kills the mic-mute button on the
+        headset. Nothing here drives the dongle LED, so it just stays dark.
+
+        Verified on a Virtuoso SE (PID 0x0a3e, freshly power-cycled): with this
+        step omitted, battery queries and set_all_rgb() both still work and the
+        dongle LED stays lit. Only the headset needs software mode. If a future
+        model turns out to need the receiver in software mode for LED control,
+        this is the line to restore.
         """
         # 1. Firmware request to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x13])
 
-        # 2. Software mode to receiver
-        self._send_v2w(EP_RECEIVER, CMD_GET, [0x03, 0x00, 0x02])
+        # 2. Software mode to receiver -- intentionally NOT sent, see docstring
 
         # 3. Heartbeat to receiver
         self._send_v2w(EP_RECEIVER, CMD_SET, [0x12])
@@ -285,6 +364,183 @@ class VirtuosoController:
 
         return False  # No response — headset is off
 
+    # ─── Physical mic-mute button ────────────────────────────────────
+
+    def poll_mic_button(self):
+        """Returns how many times the physical mic-mute button was pressed.
+
+        Only works in software mode: that is the mode where the firmware stops
+        acting on the button itself and forwards it to the host instead (see
+        _do_handshake / _leave_software_mode).
+
+        Counts key-down edges only. The button reports down (1) and up (0)
+        ~100-200ms apart and carries no mute state of its own, so the caller
+        owns the state and toggles per press.
+
+        Safe to call from a timer; the handle is non-blocking.
+        """
+        if not self.is_connected or not self._handshake_done:
+            return 0
+
+        presses = 1 if self._pending_press else 0
+        self._pending_press = False
+
+        for _ in range(32):
+            try:
+                data = self.device.read(64)
+            except Exception:
+                self._connected = False
+                return presses
+            if not data:
+                break
+            if len(data) > 3 and tuple(data[:3]) == MIC_BUTTON_REPORT and data[3]:
+                presses += 1  # key down; the matching key up is ignored
+        return presses
+
+    # ─── Mic mute (PipeWire) ─────────────────────────────────────────
+
+    def _find_pw_source(self):
+        """Finds the PipeWire/PulseAudio source name for the headset mic."""
+        if self._pw_source:
+            return self._pw_source
+        try:
+            out = subprocess.run(["pactl", "list", "sources", "short"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                low = line.lower()
+                if ("corsair" in low or "virtuoso" in low) and ".monitor" not in low:
+                    parts = line.split("\t")
+                    if len(parts) > 1:
+                        self._pw_source = parts[1]
+                        return self._pw_source
+        except Exception:
+            pass
+        return None
+
+    def set_mic_mute_pw(self, muted):
+        """Mutes/unmutes the mic at the PipeWire layer.
+
+        Deliberately NOT the ALSA capture switch: PipeWire is the layer the
+        desktop itself mutes, so acting here stays in sync with it instead of
+        hard-muting underneath it (which makes the mic look permanently dead).
+        Targets the headset source by name — the default source is often a
+        different microphone entirely.
+        """
+        src = self._find_pw_source()
+        if src is None:
+            print("Error: Corsair PipeWire source not found", file=sys.stderr)
+            return False
+        try:
+            r = subprocess.run(
+                ["pactl", "set-source-mute", src, "1" if muted else "0"],
+                capture_output=True, text=True, timeout=5)
+            return r.returncode == 0
+        except Exception as e:
+            print(f"Error setting PipeWire mute: {e}", file=sys.stderr)
+            return False
+
+    def get_mic_muted_pw(self):
+        """Reads the current PipeWire mute state. None if unavailable."""
+        src = self._find_pw_source()
+        if src is None:
+            return None
+        try:
+            r = subprocess.run(["pactl", "get-source-mute", src],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return None
+            return "yes" in r.stdout.lower()
+        except Exception:
+            return None
+
+    # ─── Mute feedback tone ──────────────────────────────────────────
+
+    def _find_pw_sink(self):
+        """Finds the PipeWire sink name for the headset speakers."""
+        if self._pw_sink:
+            return self._pw_sink
+        try:
+            out = subprocess.run(["pactl", "list", "sinks", "short"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                low = line.lower()
+                if "corsair" in low or "virtuoso" in low:
+                    parts = line.split("\t")
+                    if len(parts) > 1:
+                        self._pw_sink = parts[1]
+                        return self._pw_sink
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _write_tone(path, freqs, ms=110, rate=44100, volume=0.30):
+        """Renders a short stereo tone sequence to a WAV file."""
+        n = int(rate * ms / 1000)
+        fade = max(1, int(rate * 0.006))  # ramp, otherwise it clicks
+        frames = bytearray()
+        for freq in freqs:
+            for i in range(n):
+                env = min(1.0, i / fade, (n - i) / fade)
+                s = int(volume * env * 32767 * math.sin(2 * math.pi * freq * i / rate))
+                frames += struct.pack("<hh", s, s)
+        with wave.open(path, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(frames))
+
+    def _tone_path(self, muted):
+        """Returns the cached tone file, generating it on first use.
+
+        Tones are synthesised rather than taken from a system theme so this
+        works on any distro with no extra packages.
+        """
+        cache = os.path.expanduser("~/.cache/virtuoso-control")
+        name = "mic-muted.wav" if muted else "mic-active.wav"
+        path = os.path.join(cache, name)
+        if os.path.exists(path):
+            return path
+        try:
+            os.makedirs(cache, exist_ok=True)
+            # Descending for mute, ascending for unmute — distinguishable
+            # without looking at the headset.
+            self._write_tone(path, [880, 494] if muted else [494, 880])
+            return path
+        except Exception as e:
+            print(f"Error generating tone: {e}", file=sys.stderr)
+            return None
+
+    def play_mic_tone(self, muted):
+        """Plays the mute/unmute feedback tone through the headset.
+
+        In hardware mode the firmware beeps on a mute change by itself. Under
+        software mode it does not — the host owns the button — so the app has
+        to provide the cue. Fire-and-forget: never block the UI thread waiting
+        on playback.
+        """
+        path = self._tone_path(muted)
+        if path is None:
+            return False
+        sink = self._find_pw_sink()
+        cmd = ["paplay"]
+        if sink:
+            cmd.append(f"--device={sink}")
+        cmd.append(path)
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return True
+        except FileNotFoundError:
+            try:
+                subprocess.Popen(["pw-play", path], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
     # ─── Batería ─────────────────────────────────────────────────────
 
     @property
@@ -298,6 +554,42 @@ class VirtuosoController:
         except Exception:
             pass
         return False
+
+    def get_charging(self):
+        """Queries the headset's charge state over V2W (opcode 0x10).
+
+        Returns True if charging, False if discharging, None if unanswered.
+
+        Found by capturing the notification the headset pushes when the cable
+        is connected or removed; the same opcode answers a direct query.
+        1 = charging, 2 = discharging.
+
+        Unlike is_usb_charging this works with ANY power source — a wall
+        charger or power bank never appears on this machine's USB bus, so
+        enumeration cannot see it, but the headset knows and will say so.
+        """
+        if not self.is_connected or not self._handshake_done:
+            return None
+
+        for _ in range(3):
+            self._flush_buffer()
+            if not self._send_v2w(EP_HEADSET, CMD_SET, [OP_CHARGE]):
+                return None
+            for _ in range(8):
+                time.sleep(0.05)
+                try:
+                    res = self.device.read(64)
+                except Exception:
+                    self._connected = False
+                    return None
+                if res and len(res) > 5 and res[0] == 0x01:
+                    # Query reply: payload at [4]/[5]
+                    val = (res[5] << 8) | res[4]
+                    if val in (1, 2):
+                        return val == 1
+                    # Stale packet (the first read after idle is junk) — keep
+                    # draining rather than abandoning this attempt.
+        return None
 
     def get_battery(self):
         """Reads the battery level of the headset.
@@ -314,7 +606,7 @@ class VirtuosoController:
         usb_charging = self.is_usb_charging
 
         valid_percents = []
-        last_status = "Discharging"
+        hw_charging = False
 
         # We perform the check 3 consecutive times. 
         # Sometimes the first packet after a period of inactivity 
@@ -333,34 +625,58 @@ class VirtuosoController:
 
                 if res and len(res) > 5:
                     raw_val = (res[5] << 8) | res[4]
-                    if raw_val == 0:
+                    # 0 is an empty slot; anything over 1000 (=100%) is the
+                    # stale first packet after idle. Capping it instead of
+                    # rejecting it is what produced the phantom 100% readings.
+                    if raw_val == 0 or raw_val > 1000:
                         continue
-                        
-                    percent = min(raw_val // 10, 100)
-                    status_byte = res[3]
-                    
-                    if usb_charging or status_byte in [4, 5]:
-                        status = "Charging"
-                    else:
-                        status = "Discharging"
-                    
-                    valid_percents.append(percent)
-                    last_status = status
+
+                    valid_percents.append(raw_val // 10)
+                    if res[3] in (4, 5):
+                        hw_charging = True
                     break
-        
-        if valid_percents:
-            # Return the last reading, which is the most stable
-            return f"{valid_percents[-1]}% [{last_status}]"
-                
-        return "No response (try again)"
+
+        if not valid_percents:
+            return "No response (try again)"
+
+        # Last reading is the most stable
+        level = valid_percents[-1]
+
+        # Trend is kept only as a last resort if the query goes unanswered.
+        if self._last_level is not None:
+            if level > self._last_level:
+                self._charging_inferred = True
+            elif level < self._last_level:
+                self._charging_inferred = False
+        self._last_level = level
+
+        # Charge state, in order of reliability:
+        #   1. the headset's own answer (opcode 0x10) — authoritative, and the
+        #      only one that sees a wall charger or power bank
+        #   2. a wired Corsair PID on the bus — only when charging from this PC
+        #   3. res[3] in (4, 5) — never set by this firmware, kept for models
+        #      that do report it
+        #   4. the level trending upward
+        charging = self.get_charging()
+        if charging is None:
+            charging = usb_charging or hw_charging or self._charging_inferred
+
+        return f"{level}% [{'Charging' if charging else 'Discharging'}]"
 
     # ─── Sidetone (ALSA) ─────────────────────────────────────────────
 
     def _find_alsa_card(self):
-        """Dynamically finds the ALSA card name for the Corsair headset.
+        """Dynamically finds the ALSA card index for the Corsair headset.
 
-        Searches /proc/asound/cards for the Corsair device and returns
-        its short name (the one in brackets).
+        Matches ONLY on Corsair/Virtuoso identifiers. Generic words like
+        "Gaming" or "Hea" also match unrelated USB audio devices — e.g. a
+        "G560 Gaming Speaker" enumerating on a lower card index would win
+        the scan and every amixer command would be sent to the speakers.
+
+        Returns:
+            The card index as a string, or None if the headset is not found.
+            Callers must treat None as "do not run amixer" — guessing a card
+            sends mixer commands to somebody else's hardware.
         """
         if self._alsa_card:
             return self._alsa_card
@@ -368,12 +684,12 @@ class VirtuosoController:
         try:
             with open("/proc/asound/cards", "r") as f:
                 for line in f:
-                    # Format: " 1 [Gaming         ]: USB-Audio - ..."
-                    if "Corsair" in line or "VIRTUOSO" in line or "Gaming" in line or "Hea" in line:
-                        if "[" in line and "]" in line:
-                            start = line.index("[") + 1
-                            end = line.index("]")
-                            self._alsa_card = line[start:end].strip()
+                    # Format: " 4 [Ga  ]: USB-Audio - CORSAIR VIRTUOSO SE Wireless Ga"
+                    low = line.lower()
+                    if "corsair" in low or "virtuoso" in low:
+                        index = line.split()[0]
+                        if index.isdigit():
+                            self._alsa_card = index
                             return self._alsa_card
         except Exception:
             pass
@@ -384,16 +700,16 @@ class VirtuosoController:
                 ["aplay", "-l"], capture_output=True, text=True, timeout=5
             )
             for line in result.stdout.splitlines():
-                if "Corsair" in line or "VIRTUOSO" in line:
-                    if "card" in line:
-                        parts = line.split(":")
-                        card_num = parts[0].strip().split()[-1]
+                low = line.lower()
+                if ("corsair" in low or "virtuoso" in low) and line.startswith("card "):
+                    card_num = line.split(":")[0].strip().split()[-1]
+                    if card_num.isdigit():
                         self._alsa_card = card_num
                         return self._alsa_card
         except Exception:
             pass
 
-        return "Gamin"  # Last resort
+        return None
 
     def set_sidetone(self, value):
         """Controls the sidetone via ALSA mixer.
@@ -405,6 +721,9 @@ class VirtuosoController:
             True if the command was executed successfully.
         """
         card = self._find_alsa_card()
+        if card is None:
+            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            return False
 
         try:
             if value == "on":
@@ -478,6 +797,9 @@ class VirtuosoController:
     def set_volume(self, value):
         """Adjusts the volume via ALSA mixer."""
         card = self._find_alsa_card()
+        if card is None:
+            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            return False
         try:
             val_str = f"{value}%" if "%" not in str(value) else str(value)
             result = subprocess.run(
@@ -488,6 +810,75 @@ class VirtuosoController:
         except Exception:
             return False
 
+    # ─── Micrófono (ALSA) ───────────────────────────────────────────
+
+    def set_mic_mute(self, muted):
+        """Mutes/unmutes the microphone via the ALSA capture switch.
+
+        'Mic' is a capture-only control, so amixer needs cap/nocap here.
+        mute/unmute are playback verbs — amixer accepts them, exits 0, and
+        silently leaves the capture switch untouched.
+
+        NOT used by the GUI, deliberately. The desktop already handles the
+        headset's physical mute button by muting the PipeWire source, which
+        sits above this switch. Muting here as well leaves the mic off at the
+        ALSA layer, so the physical button appears to stop working — it toggles
+        PipeWire over a mic that is already hard-muted underneath. Call this
+        only if nothing else is managing mute.
+
+        Args:
+            muted: True to mute, False to unmute.
+
+        Returns:
+            True if the command was executed successfully.
+        """
+        card = self._find_alsa_card()
+        if card is None:
+            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            return False
+        try:
+            result = subprocess.run(
+                ["amixer", "-c", card, "sset", "Mic", "nocap" if muted else "cap"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                print(f"Error amixer mic: {result.stderr}", file=sys.stderr)
+                return False
+            return True
+        except Exception as e:
+            print(f"Error mic mute: {e}", file=sys.stderr)
+            return False
+
+    def get_mic_muted(self):
+        """Reads the current microphone mute state from ALSA.
+
+        Lets the UI pick up changes made outside the app — including the
+        headset's physical mic-mute button, if the firmware routes it
+        through the capture switch.
+
+        Returns:
+            True if muted, False if active, None if it could not be read.
+        """
+        card = self._find_alsa_card()
+        if card is None:
+            return None
+        try:
+            result = subprocess.run(
+                ["amixer", "-c", card, "sget", "Mic"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                return None
+            for line in result.stdout.splitlines():
+                # Only the channel line carries the switch state.
+                if "[off]" in line:
+                    return True
+                if "[on]" in line:
+                    return False
+        except Exception:
+            pass
+        return None
+
 
 # ─── CLI ─────────────────────────────────────────────────────────────
 
@@ -497,6 +888,7 @@ if __name__ == "__main__":
         print("  python3 virtuoso_control.py sidetone [on|off|0-100]")
         print("  python3 virtuoso_control.py sidetone-v2w [0-100]")
         print("  python3 virtuoso_control.py volume [0-100]")
+        print("  python3 virtuoso_control.py mic [mute|unmute|status]   (PipeWire)")
         print("  python3 virtuoso_control.py battery")
         sys.exit(1)
 
@@ -548,3 +940,19 @@ if __name__ == "__main__":
             print(f"✓ Volumen: {val}%")
         else:
             print("✗ Error adjusting volumen.")
+
+    elif category == "mic":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if val == "status":
+            state = ctrl.get_mic_muted_pw()
+            if state is None:
+                print("✗ Could not read mic state.")
+            else:
+                print(f"Mic: {'Muted' if state else 'Active'}")
+        elif val in ("mute", "unmute"):
+            if ctrl.set_mic_mute_pw(val == "mute"):
+                print(f"✓ Mic: {'Muted' if val == 'mute' else 'Active'}")
+            else:
+                print("✗ Error adjusting mic.")
+        else:
+            print("Usage: mic [mute|unmute|status]")
