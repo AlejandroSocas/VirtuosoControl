@@ -403,11 +403,29 @@ def build_stylesheet(p):
         background: {p['surface_alt']};
         border: 1px solid {p['border']};
         border-radius: 8px;
-        padding: 5px 10px;
+        /* Right padding clears the strip ThemedComboBox paints into. */
+        padding: 5px 26px 5px 10px;
         color: {p['text']};
     }}
     QComboBox:hover {{
         border-color: {p['accent']};
+    }}
+    QComboBox:disabled {{
+        color: {p['text_muted']};
+        background: {p['surface']};
+        border-color: {p['surface_alt']};
+    }}
+    /* The default arrow is suppressed rather than restyled — there is no
+       image to give it. ThemedComboBox.paintEvent draws the chevron. */
+    QComboBox::drop-down {{
+        border: none;
+        background: transparent;
+        width: 26px;
+    }}
+    QComboBox::down-arrow {{
+        image: none;
+        width: 0px;
+        height: 0px;
     }}
     QComboBox QAbstractItemView {{
         background: {p['surface']};
@@ -657,6 +675,40 @@ class BatteryGauge(QWidget):
         pt.end()
 
 
+class ThemedComboBox(QComboBox):
+    """Combo box that paints its own chevron.
+
+    Same trap as QCheckBox (see build_stylesheet): styling the combo at all
+    hands its subcontrols to QStyleSheetStyle, which has no image for
+    ::down-arrow and falls back to a crude built-in triangle that ignores the
+    palette. There is no bundled image to point it at, so the QSS suppresses
+    the arrow entirely and it is drawn here instead.
+    """
+
+    ARROW_BOX = 26      # reserved strip on the right, matches QSS padding
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(c("text") if self.isEnabled() else c("text_muted"))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pt.setPen(pen)
+
+        cx = self.width() - self.ARROW_BOX / 2
+        cy = self.height() / 2
+        w, h = 4.5, 2.6      # half-width / half-height of the chevron
+        pt.drawPolyline(QPolygonF([
+            QPointF(cx - w, cy - h / 2),
+            QPointF(cx, cy + h),
+            QPointF(cx + w, cy - h / 2),
+        ]))
+        pt.end()
+
+
 class Card(QFrame):
     """Titled rounded container. `body` is the layout callers add rows to."""
 
@@ -701,12 +753,12 @@ class SettingsDialog(QDialog):
         self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
         self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
 
-        self.tray_mode_combo = QComboBox()
+        self.tray_mode_combo = ThemedComboBox()
         self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
         self.tray_mode_combo.addItem(_tr("Battery icon"), "battery")
         self.tray_mode_combo.addItem(_tr("Both"), "both")
 
-        self.lang_combo = QComboBox()
+        self.lang_combo = ThemedComboBox()
         self.lang_combo.addItem("English", "en")
         self.lang_combo.addItem("Español", "es")
 
