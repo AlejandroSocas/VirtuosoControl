@@ -14,12 +14,16 @@ Features:
 """
 import sys
 import os
+import math
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
-                             QGroupBox, QSystemTrayIcon, QMenu, QCheckBox,
-                             QRadioButton, QButtonGroup, QColorDialog, QDialog, QComboBox)
-from PyQt6.QtCore import Qt, QTimer, QSettings
-from PyQt6.QtGui import QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen
+                             QFrame, QSystemTrayIcon, QMenu, QCheckBox,
+                             QButtonGroup, QColorDialog, QDialog,
+                             QComboBox, QAbstractButton, QToolButton, QSizePolicy)
+from PyQt6.QtCore import (Qt, QTimer, QSettings, QRectF, QLineF, QSize,
+                          QPointF)
+from PyQt6.QtGui import (QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen,
+                         QFont, QPalette, QPolygonF)
 from virtuoso_control import VirtuosoController
 
 TRANSLATIONS = {
@@ -60,6 +64,7 @@ TRANSLATIONS = {
         "Disconnected": "Desconectado",
         "Searching for device...": "Buscando dispositivo...",
         "Wired": "Por cable",
+        "Wireless": "Inalámbrico",
         "Not connected": "No conectado",
         "Charging": "Cargando",
         "Discharging": "Descargando",
@@ -83,6 +88,21 @@ TRANSLATIONS = {
         "Profile Saved": "Perfil Guardado",
         "Error": "Error",
         "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
+        "Lighting": "Iluminación",
+        "Logo": "Logo",
+        "Mic": "Micrófono",
+        "Muted": "Silenciado",
+        "Active": "Activo",
+        "Profiles": "Perfiles",
+        "Save to Profile 1": "Guardar en Perfil 1",
+        "Save to Profile 2": "Guardar en Perfil 2",
+        "Save to Profile 3": "Guardar en Perfil 3",
+        "Save current lighting to a profile": "Guardar la iluminación actual en un perfil",
+        "N/A (Wired)": "N/D (Cable)",
+        "Level": "Nivel",
+        "Brightness": "Brillo",
+        "Method": "Método",
+        "Status": "Estado",
     }
 }
 
@@ -93,49 +113,633 @@ def _tr(text):
         return TRANSLATIONS["es"][text]
     return text
 
+# ─── Theme ──────────────────────────────────────────────────────────
+#
+# The app follows the desktop's light/dark preference. Every colour used by
+# the stylesheet *and* by the hand-painted widgets below comes from one of
+# these two dicts, so switching schemes is a matter of swapping THEME and
+# re-applying — see apply_theme().
+
+PALETTES = {
+    "dark": {
+        "window":      "#14161b",
+        "surface":     "#1c1f26",
+        "surface_alt": "#232732",
+        "border":      "#2e333f",
+        "text":        "#e6e8ee",
+        "text_muted":  "#8d94a5",
+        "accent":      "#4c9aff",
+        "accent_hi":   "#63a9ff",
+        "accent_lo":   "#3d86e6",
+        "on_accent":   "#0d1117",
+        "track":       "#2b3040",
+        "ok":          "#35d07f",
+        "warn":        "#f0b429",
+        "danger":      "#ff5c5c",
+        "handle":      "#f2f4f8",
+    },
+    "light": {
+        "window":      "#f2f4f7",
+        "surface":     "#ffffff",
+        "surface_alt": "#eef1f5",
+        "border":      "#d7dce4",
+        "text":        "#171a20",
+        "text_muted":  "#626b7b",
+        "accent":      "#2f6fd0",
+        "accent_hi":   "#3c7de0",
+        "accent_lo":   "#2860ba",
+        "on_accent":   "#ffffff",
+        "track":       "#dde2ea",
+        "ok":          "#12925a",
+        "warn":        "#b8770a",
+        "danger":      "#d0342c",
+        "handle":      "#ffffff",
+    },
+}
+
+THEME = dict(PALETTES["dark"])
+
+
+def c(key):
+    """QColor for a theme key. Painted widgets read their colours through this."""
+    return QColor(THEME[key])
+
+
+def detect_scheme(app):
+    """'dark' or 'light', from the desktop preference.
+
+    Qt 6.5+ reports the platform's colour-scheme hint directly; the palette
+    lightness check is a fallback for platforms that leave it Unknown.
+    """
+    try:
+        scheme = app.styleHints().colorScheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return "dark"
+        if scheme == Qt.ColorScheme.Light:
+            return "light"
+    except AttributeError:
+        pass
+    return "dark" if app.palette().color(
+        QPalette.ColorRole.Window).lightness() < 128 else "light"
+
+
+def build_palette(p):
+    """QPalette mirroring the theme.
+
+    QSS cannot reach the primitives the style draws itself — the checkbox tick
+    is the visible one: restyling `::indicator` in QSS removes the tick and
+    there is no bundled image to put back. Those primitives follow the
+    QPalette instead, so both have to be kept in step or checkboxes come out
+    dark on the light skin.
+    """
+    pal = QPalette()
+    window, surface = QColor(p["window"]), QColor(p["surface"])
+    text, muted = QColor(p["text"]), QColor(p["text_muted"])
+    accent = QColor(p["accent"])
+
+    roles = {
+        QPalette.ColorRole.Window: window,
+        QPalette.ColorRole.WindowText: text,
+        QPalette.ColorRole.Base: surface,
+        QPalette.ColorRole.AlternateBase: QColor(p["surface_alt"]),
+        QPalette.ColorRole.Text: text,
+        QPalette.ColorRole.Button: QColor(p["surface_alt"]),
+        QPalette.ColorRole.ButtonText: text,
+        QPalette.ColorRole.ToolTipBase: QColor(p["surface_alt"]),
+        QPalette.ColorRole.ToolTipText: text,
+        QPalette.ColorRole.PlaceholderText: muted,
+        QPalette.ColorRole.Highlight: accent,
+        QPalette.ColorRole.HighlightedText: QColor(p["on_accent"]),
+        QPalette.ColorRole.Link: accent,
+    }
+    for role, color in roles.items():
+        pal.setColor(role, color)
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                 QPalette.ColorRole.ButtonText):
+        pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
+    return pal
+
+
+def build_stylesheet(p):
+    """The whole app skin, interpolated from a palette dict.
+
+    Checkbox and radio indicators are deliberately left unstyled here — see
+    build_palette() for why. The sidetone method picker is not a radio pair for
+    the same reason: it is two checkable buttons in an exclusive group, which
+    QSS *can* redraw as a segmented control.
+    """
+    return f"""
+    QMainWindow, QDialog {{
+        background: {p['window']};
+    }}
+    QToolTip {{
+        background: {p['surface_alt']};
+        color: {p['text']};
+        border: 1px solid {p['border']};
+        padding: 4px 6px;
+        border-radius: 4px;
+    }}
+
+    /* Cards */
+    QFrame#Card {{
+        background: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: 12px;
+    }}
+    QLabel#CardTitle {{
+        color: {p['text_muted']};
+        font-size: 11px;
+        font-weight: 700;
+    }}
+    QLabel#Muted {{
+        color: {p['text_muted']};
+    }}
+    QLabel#RowLabel {{
+        color: {p['text_muted']};
+        font-size: 12px;
+    }}
+    QLabel#Value {{
+        color: {p['text']};
+        font-size: 12px;
+        font-weight: 600;
+    }}
+    QLabel#BattPercent {{
+        font-size: 26px;
+        font-weight: 700;
+    }}
+    QLabel#StatusText {{
+        font-size: 13px;
+        font-weight: 600;
+    }}
+
+    /* Buttons */
+    QPushButton, QToolButton {{
+        background: {p['surface_alt']};
+        border: 1px solid {p['border']};
+        border-radius: 8px;
+        padding: 6px 12px;
+        color: {p['text']};
+    }}
+    QPushButton:hover, QToolButton:hover {{
+        background: {p['border']};
+    }}
+    QPushButton:pressed, QToolButton:pressed {{
+        background: {p['accent_lo']};
+        color: {p['on_accent']};
+    }}
+    QPushButton:disabled, QToolButton:disabled {{
+        color: {p['text_muted']};
+        background: {p['surface']};
+        border-color: {p['surface_alt']};
+    }}
+    QPushButton#IconBtn {{
+        padding: 0px;
+        min-width: 28px;
+        max-width: 28px;
+        min-height: 28px;
+        max-height: 28px;
+        border-radius: 8px;
+        font-size: 14px;
+    }}
+    QPushButton#Primary {{
+        background: {p['accent']};
+        border-color: {p['accent']};
+        color: {p['on_accent']};
+        font-weight: 600;
+        padding: 8px 12px;
+    }}
+    QPushButton#Primary:hover {{
+        background: {p['accent_hi']};
+        border-color: {p['accent_hi']};
+    }}
+    QPushButton#Primary:checked {{
+        background: {p['surface_alt']};
+        border-color: {p['border']};
+        color: {p['text_muted']};
+    }}
+    QPushButton#Primary:disabled {{
+        background: {p['surface']};
+        border-color: {p['surface_alt']};
+        color: {p['text_muted']};
+    }}
+    QPushButton#Profile {{
+        padding: 5px 0px;
+        font-weight: 600;
+    }}
+    QToolButton#SaveMenu::menu-indicator {{
+        image: none;
+    }}
+
+    /* Segmented control (sidetone method) */
+    QPushButton#SegLeft, QPushButton#SegRight {{
+        background: {p['surface_alt']};
+        border: 1px solid {p['border']};
+        border-radius: 0px;
+        color: {p['text_muted']};
+        padding: 3px 10px;
+        font-size: 11px;
+        font-weight: 600;
+    }}
+    QPushButton#SegLeft:hover, QPushButton#SegRight:hover {{
+        color: {p['text']};
+    }}
+    QPushButton#SegLeft:checked, QPushButton#SegRight:checked {{
+        background: {p['accent']};
+        border-color: {p['accent']};
+        color: {p['on_accent']};
+    }}
+    QPushButton#SegLeft:disabled, QPushButton#SegRight:disabled {{
+        color: {p['text_muted']};
+        background: {p['surface']};
+        border-color: {p['surface_alt']};
+    }}
+    QPushButton#SegLeft {{
+        border-top-left-radius: 7px;
+        border-bottom-left-radius: 7px;
+        border-right: none;
+    }}
+    QPushButton#SegRight {{
+        border-top-right-radius: 7px;
+        border-bottom-right-radius: 7px;
+    }}
+
+    /* Sliders */
+    QSlider::groove:horizontal {{
+        height: 5px;
+        background: {p['track']};
+        border-radius: 3px;
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {p['accent']};
+        border-radius: 3px;
+    }}
+    QSlider::handle:horizontal {{
+        background: {p['handle']};
+        border: 2px solid {p['accent']};
+        width: 12px;
+        height: 12px;
+        margin: -6px 0px;
+        border-radius: 8px;
+    }}
+    QSlider::handle:horizontal:hover {{
+        border-color: {p['accent_hi']};
+    }}
+    QSlider::groove:horizontal:disabled {{
+        background: {p['surface_alt']};
+    }}
+    QSlider::sub-page:horizontal:disabled {{
+        background: {p['border']};
+    }}
+    QSlider::handle:horizontal:disabled {{
+        background: {p['surface_alt']};
+        border-color: {p['border']};
+    }}
+
+    /* QCheckBox is intentionally absent: any QSS rule matching it hands
+       indicator drawing to QStyleSheetStyle, which has no tick image to draw
+       and renders a bare checkmark with no box. It is themed by palette only. */
+
+    QComboBox {{
+        background: {p['surface_alt']};
+        border: 1px solid {p['border']};
+        border-radius: 8px;
+        padding: 5px 10px;
+        color: {p['text']};
+    }}
+    QComboBox:hover {{
+        border-color: {p['accent']};
+    }}
+    QComboBox QAbstractItemView {{
+        background: {p['surface']};
+        border: 1px solid {p['border']};
+        selection-background-color: {p['accent']};
+        selection-color: {p['on_accent']};
+        outline: none;
+    }}
+
+    QMenu {{
+        background: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: 8px;
+        padding: 4px;
+    }}
+    QMenu::item {{
+        padding: 6px 18px 6px 12px;
+        border-radius: 6px;
+    }}
+    QMenu::item:selected {{
+        background: {p['accent']};
+        color: {p['on_accent']};
+    }}
+    QMenu::item:disabled {{
+        color: {p['text_muted']};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {p['border']};
+        margin: 4px 8px;
+    }}
+    """
+
+
+def apply_theme(app, scheme=None):
+    """Swaps THEME to the given (or detected) scheme and re-skins the app.
+
+    The platform style is deliberately left alone. Forcing Fusion was tried and
+    reverted: Fusion derives the checkbox indicator's frame from palette shades
+    that this palette flattens, so checked boxes came out as a bare tick with no
+    box. The desktop's own style draws them correctly from the same palette.
+    """
+    if scheme is None:
+        scheme = detect_scheme(app)
+    THEME.clear()
+    THEME.update(PALETTES[scheme])
+    app.setPalette(build_palette(THEME))
+    # Base size is set on the application font rather than in QSS, because a
+    # QSS rule broad enough to cover every widget would also match QCheckBox.
+    font = app.font()
+    font.setPixelSize(13)
+    app.setFont(font)
+    app.setStyleSheet(build_stylesheet(THEME))
+    return scheme
+
+
+ICON_UNITS = 16      # logical drawing space for the painted icons
+ICON_SCALE = 4       # device pixels per unit, so the icons stay crisp on hidpi
+
+
+def _icon_painter(color, width=1.6):
+    """Sets up a transparent pixmap and a stroked painter over ICON_UNITS².
+
+    Both header icons are painted rather than typed: ⚙ and ↻ resolve to
+    full-colour emoji glyphs on a typical Linux font stack, which ignore the
+    palette and clash with everything else in the window.
+    """
+    pm = QPixmap(ICON_UNITS * ICON_SCALE, ICON_UNITS * ICON_SCALE)
+    pm.setDevicePixelRatio(ICON_SCALE)
+    pm.fill(Qt.GlobalColor.transparent)
+
+    pt = QPainter(pm)
+    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidthF(width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    pt.setPen(pen)
+    return pm, pt
+
+
+def make_settings_icon(color):
+    """Rails with knobs — a settings/sliders glyph.
+
+    Two rails, not three: at a 16px icon size a third rail closes the gaps up
+    until the whole thing reads as a smudge.
+    """
+    pm, pt = _icon_painter(color, 1.7)
+
+    rails = ((5.5, 10.2), (10.5, 6.0))
+    knob_r, x0, x1 = 1.75, 1.9, 14.1
+    gap = knob_r + 1.2
+    for y, knob_x in rails:
+        # Rail drawn either side of the knob so the knob never has to be
+        # filled with the button's background colour to stay readable.
+        pt.drawLine(QLineF(x0, y, knob_x - gap, y))
+        pt.drawLine(QLineF(knob_x + gap, y, x1, y))
+    pt.setBrush(QBrush(QColor(color)))
+    pt.setPen(Qt.PenStyle.NoPen)
+    for y, knob_x in rails:
+        pt.drawEllipse(QRectF(knob_x - knob_r, y - knob_r, knob_r * 2, knob_r * 2))
+    pt.end()
+    return QIcon(pm)
+
+
+def make_refresh_icon(color):
+    """Open circular arrow — reconnect / re-read."""
+    pm, pt = _icon_painter(color, 1.6)
+    cx = cy = 8.0
+    r = 5.0
+    # The sweep stops well short of a full turn: the gap is what makes the
+    # arrowhead legible as an arrowhead at 16px rather than a lump on a ring.
+    start, span = 40, 250           # degrees, counter-clockwise
+    pt.setBrush(Qt.BrushStyle.NoBrush)
+    pt.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), start * 16, span * 16)
+
+    # Arrowhead on the leading end of the sweep, aligned to the tangent there.
+    end = math.radians(start + span)
+    tip_x, tip_y = cx + r * math.cos(end), cy - r * math.sin(end)
+    tangent = (-math.sin(end), -math.cos(end))
+    normal = (math.cos(end), -math.sin(end))
+    pt.setPen(Qt.PenStyle.NoPen)
+    pt.setBrush(QBrush(QColor(color)))
+    pt.drawPolygon(QPolygonF([
+        QPointF(tip_x + tangent[0] * 3.6, tip_y + tangent[1] * 3.6),
+        QPointF(tip_x + normal[0] * 2.4, tip_y + normal[1] * 2.4),
+        QPointF(tip_x - normal[0] * 2.4, tip_y - normal[1] * 2.4),
+    ]))
+    pt.end()
+    return QIcon(pm)
+
+
+# ─── Painted widgets ────────────────────────────────────────────────
+#
+# These draw themselves from THEME rather than from QSS, because QSS cannot
+# express a rounded progress fill or a soft status glow.
+
+class StatusDot(QWidget):
+    """Small filled circle with a halo — the connection indicator."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(14, 14)
+        self._color = c("text_muted")
+
+    def set_color(self, color):
+        self._color = QColor(color)
+        self.update()
+
+    def paintEvent(self, _event):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        halo = QColor(self._color)
+        halo.setAlpha(60)
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(QBrush(halo))
+        pt.drawEllipse(QRectF(0, 0, 14, 14))
+        pt.setBrush(QBrush(self._color))
+        pt.drawEllipse(QRectF(3.5, 3.5, 7, 7))
+        pt.end()
+
+
+class ColorSwatch(QAbstractButton):
+    """Clickable colour chip. Replaces the old preview-label + button pair."""
+
+    def __init__(self, color="#ff0000", parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self.setFixedSize(38, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def color(self):
+        return QColor(self._color)
+
+    def set_color(self, color):
+        self._color = QColor(color)
+        self.update()
+
+    def paintEvent(self, _event):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+
+        fill = QColor(self._color)
+        if not self.isEnabled():
+            fill.setAlpha(70)
+        pt.setBrush(QBrush(fill))
+
+        edge = c("accent") if (self.underMouse() and self.isEnabled()) else c("border")
+        pen = QPen(edge)
+        pen.setWidthF(1.5)
+        pt.setPen(pen)
+        pt.drawRoundedRect(rect, 7, 7)
+        pt.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+
+class BatteryGauge(QWidget):
+    """Rounded capacity bar. Colour tracks charge level / charging state."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(8)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._percent = None
+        self._charging = False
+
+    def set_state(self, percent, charging):
+        self._percent = percent
+        self._charging = charging
+        self.update()
+
+    def level_color(self):
+        if self._percent is None:
+            return c("text_muted")
+        if self._charging:
+            return c("accent")
+        if self._percent > 50:
+            return c("ok")
+        if self._percent > 20:
+            return c("warn")
+        return c("danger")
+
+    def paintEvent(self, _event):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        h = self.height()
+        r = h / 2
+
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(QBrush(c("track")))
+        pt.drawRoundedRect(QRectF(0, 0, self.width(), h), r, r)
+
+        if self._percent:
+            # Never narrower than the capsule is tall, so 1–4% still reads as
+            # a dot rather than a sliver clipped away by the rounded corners.
+            w = max(h, self.width() * min(self._percent, 100) / 100.0)
+            pt.setBrush(QBrush(self.level_color()))
+            pt.drawRoundedRect(QRectF(0, 0, w, h), r, r)
+        pt.end()
+
+
+class Card(QFrame):
+    """Titled rounded container. `body` is the layout callers add rows to."""
+
+    def __init__(self, title=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 13)
+        outer.setSpacing(9)
+
+        self.header = QHBoxLayout()
+        self.header.setSpacing(8)
+        if title:
+            self.title_label = QLabel(title.upper())
+            self.title_label.setObjectName("CardTitle")
+            # QSS has no letter-spacing; the tracked small-caps look that makes
+            # these read as section headings has to be set on the font.
+            font = self.title_label.font()
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
+            self.title_label.setFont(font)
+            self.header.addWidget(self.title_label)
+        self.header.addStretch()
+        outer.addLayout(self.header)
+
+        self.body = QVBoxLayout()
+        self.body.setSpacing(9)
+        outer.addLayout(self.body)
+
+    def add_header_widget(self, widget):
+        self.header.addWidget(widget)
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_tr("Settings"))
-        self.setFixedSize(300, 230)
-        
+        self.setFixedWidth(340)
+
         layout = QVBoxLayout(self)
-        
+        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setSpacing(12)
+
         self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
         self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
-        tray_layout = QHBoxLayout()
-        tray_layout.addWidget(QLabel(_tr("Tray icon:")))
+
         self.tray_mode_combo = QComboBox()
         self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
         self.tray_mode_combo.addItem(_tr("Battery icon"), "battery")
         self.tray_mode_combo.addItem(_tr("Both"), "both")
-        tray_layout.addWidget(self.tray_mode_combo)
-        
-        lang_layout = QHBoxLayout()
-        lang_layout.addWidget(QLabel(_tr("Language (requires restart):")))
+
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("English", "en")
         self.lang_combo.addItem("Español", "es")
-        lang_layout.addWidget(self.lang_combo)
-        
+
         layout.addWidget(self.autostart_cb)
         layout.addWidget(self.minimized_cb)
-        layout.addLayout(tray_layout)
-        layout.addLayout(lang_layout)
-        layout.addStretch()
-        
+        # Stacked rather than side by side: the Spanish label for the language
+        # row is long enough to squeeze the combo box down to nothing.
+        for text, combo in ((_tr("Tray icon:"), self.tray_mode_combo),
+                            (_tr("Language (requires restart):"), self.lang_combo)):
+            caption = QLabel(text)
+            caption.setObjectName("RowLabel")
+            layout.addWidget(caption)
+            layout.addWidget(combo)
+
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
         save_btn = QPushButton(_tr("Save"))
+        save_btn.setObjectName("Primary")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.clicked.connect(self.save_and_close)
         cancel_btn = QPushButton(_tr("Cancel"))
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
-        
+
         btn_layout.addStretch()
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(save_btn)
+        layout.addSpacing(4)
         layout.addLayout(btn_layout)
-        
+
         self.load_settings()
+        self.adjustSize()
+        self.setFixedHeight(self.sizeHint().height())
 
     def load_settings(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
@@ -193,8 +797,22 @@ class VirtuosoGUI(QMainWindow):
         self.icon_path = os.path.join(self.script_dir, "virtuoso_icon.png")
 
         self.init_ui()
+        self._refresh_icons()
         self._load_settings()   # Load preferences (signals blocked)
+        self._sync_mic_status()
         self.init_tray()        # Tray with quick actions
+
+        # Height is locked to the assembled content rather than hardcoded, so
+        # the window stays tight whichever language the labels are in.
+        self.adjustSize()
+        self.setFixedHeight(self.sizeHint().height())
+
+        # Re-skin if the desktop switches between light and dark while running.
+        try:
+            QApplication.instance().styleHints().colorSchemeChanged.connect(
+                self._on_color_scheme_changed)
+        except AttributeError:
+            pass
 
         # Timer: LED keep-alive (every 20s)
         self.keep_alive_timer = QTimer()
@@ -232,209 +850,316 @@ class VirtuosoGUI(QMainWindow):
         if dlg.exec():
             self._setup_tray_icons()  # applies without a restart
 
+    def _refresh_icons(self):
+        """(Re)paints the header icons in the current theme's text colour."""
+        refresh = make_refresh_icon(THEME["text"])
+        settings = make_settings_icon(THEME["text"])
+        for btn, icon in ((self.refresh_conn_btn, refresh),
+                          (self.batt_btn, refresh),
+                          (self.settings_btn, settings)):
+            btn.setIcon(icon)
+            btn.setIconSize(QSize(16, 16))
+
+    def _on_color_scheme_changed(self, _scheme=None):
+        """Re-skins when the desktop flips between light and dark.
+
+        The stylesheet is rebuilt wholesale, but the handful of colours set
+        inline (status text, mic state, battery percentage) live outside it and
+        have to be recomputed from the new THEME by hand.
+        """
+        apply_theme(QApplication.instance())
+        self._refresh_icons()
+        self._update_status(self._hid_connected)
+        self._sync_mic_status()
+        self.batt_percent.setStyleSheet(
+            f"color: {self.batt_gauge.level_color().name()};")
+        for w in (self.status_dot, self.mic_state_dot, self.batt_gauge,
+                  self.rgb_color_btn, self.mic_color_btn,
+                  self.mic_mute_color_btn):
+            w.update()
+
+    # --- small builders shared by the cards -------------------------
+
+    # Every card indents its controls past a label column of this width. It is
+    # measured rather than hardcoded: at a fixed 54px the English labels fit
+    # but "Micrófono" and "Silenciado" are cut off mid-word.
+    ROW_LABELS = ("Logo", "Mic", "Profiles", "Status", "Muted", "Level")
+
+    def _measure_row_label_width(self):
+        fm = self.fontMetrics()
+        return max(54, max(fm.horizontalAdvance(_tr(t)) for t in self.ROW_LABELS) + 8)
+
+    def _row_label(self, text):
+        lbl = QLabel(text)
+        lbl.setObjectName("RowLabel")
+        lbl.setFixedWidth(self._row_label_w)
+        return lbl
+
+    @staticmethod
+    def _make_slider(value, on_change):
+        sld = QSlider(Qt.Orientation.Horizontal)
+        sld.setRange(0, 100)
+        sld.setValue(value)
+        sld.valueChanged.connect(on_change)
+        return sld
+
+    @staticmethod
+    def _value_label(text):
+        lbl = QLabel(text)
+        lbl.setObjectName("Value")
+        lbl.setFixedWidth(36)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                         | Qt.AlignmentFlag.AlignVCenter)
+        return lbl
+
     def init_ui(self):
         self.setWindowTitle("Virtuoso Control")
         self.setWindowIcon(QIcon(self.icon_path))
-        self.setFixedSize(340, 700)
+        # Width is fixed so the cards keep their proportions; the height is
+        # locked to the content in __init__ once every card has been built,
+        # which keeps the window tight in both languages.
+        self.setFixedWidth(378)
+        self._row_label_w = self._measure_row_label_width()
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
 
-        # --- Status + Battery ---
-        status_row = QHBoxLayout()
-        self.status_label = QLabel(_tr("⏳ Connecting..."))
-        self.status_label.setStyleSheet("font-weight: bold; padding: 4px;")
-        
-        self.refresh_conn_btn = QPushButton("↻")
-        self.refresh_conn_btn.setFixedSize(30, 26)
+        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_battery_card())
+        layout.addWidget(self._build_lighting_card())
+        layout.addWidget(self._build_mic_card())
+        layout.addWidget(self._build_sidetone_card())
+        layout.addWidget(self._build_volume_card())
+        layout.addStretch()
+
+    def _build_header(self):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.setContentsMargins(2, 0, 0, 2)
+
+        self.status_dot = StatusDot()
+        self.status_label = QLabel(_tr("Connecting..."))
+        self.status_label.setObjectName("StatusText")
+
+        self.refresh_conn_btn = QPushButton()
+        self.refresh_conn_btn.setObjectName("IconBtn")
         self.refresh_conn_btn.setToolTip(_tr("Refresh"))
+        self.refresh_conn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_conn_btn.clicked.connect(self.force_reconnect)
-        
-        self.settings_btn = QPushButton("⚙")
-        self.settings_btn.setFixedSize(30, 26)
+
+        self.settings_btn = QPushButton()
+        self.settings_btn.setObjectName("IconBtn")
         self.settings_btn.setToolTip(_tr("Settings"))
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self.open_settings)
-        
-        status_row.addWidget(self.status_label)
-        status_row.addStretch()
-        status_row.addWidget(self.refresh_conn_btn)
-        status_row.addWidget(self.settings_btn)
-        layout.addLayout(status_row)
 
-        batt_row = QHBoxLayout()
-        self.batt_label = QLabel(_tr("🔋 Battery: --"))
-        self.batt_btn = QPushButton(_tr("Refresh"))
-        self.batt_btn.setFixedWidth(80)
+        row.addWidget(self.status_dot)
+        row.addWidget(self.status_label)
+        row.addStretch()
+        row.addWidget(self.refresh_conn_btn)
+        row.addWidget(self.settings_btn)
+        return row
+
+    def _build_battery_card(self):
+        card = Card(_tr("Battery"))
+
+        self.batt_btn = QPushButton()
+        self.batt_btn.setObjectName("IconBtn")
+        self.batt_btn.setToolTip(_tr("Refresh"))
+        self.batt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batt_btn.clicked.connect(self.check_battery)
-        batt_row.addWidget(self.batt_label)
-        batt_row.addStretch()
-        batt_row.addWidget(self.batt_btn)
-        layout.addLayout(batt_row)
+        card.add_header_widget(self.batt_btn)
 
-        # --- Microphone ---
-        mic_group = QGroupBox(_tr("Microphone"))
-        mic_lay = QVBoxLayout()
+        self.batt_percent = QLabel("--")
+        self.batt_percent.setObjectName("BattPercent")
 
-        mic_color_row = QHBoxLayout()
-        self.mic_color_btn = QPushButton(_tr("Pick Color"))
+        # Charging / discharging, i.e. the non-numeric half of the reading.
+        # Also carries the whole string when there is no percentage to show
+        # ("Not connected", "N/A (Wired)").
+        self.batt_label = QLabel("")
+        self.batt_label.setObjectName("Muted")
+        self.batt_label.setContentsMargins(0, 0, 0, 4)
+
+        read_row = QHBoxLayout()
+        read_row.setSpacing(9)
+        read_row.addWidget(self.batt_percent)
+        read_row.addWidget(self.batt_label, 0, Qt.AlignmentFlag.AlignBottom)
+        read_row.addStretch()
+
+        self.batt_gauge = BatteryGauge()
+
+        card.body.setSpacing(7)
+        card.body.addLayout(read_row)
+        card.body.addWidget(self.batt_gauge)
+        return card
+
+    def _build_lighting_card(self):
+        card = Card(_tr("Lighting"))
+
+        # Logo zone
+        self.rgb_color_btn = ColorSwatch()
+        self.rgb_color_btn.setToolTip(_tr("Pick Logo Color"))
+        self.rgb_color_btn.clicked.connect(self.choose_color)
+        self.rgb_slider = self._make_slider(100, self.change_rgb)
+        self.rgb_label = self._value_label("100%")
+
+        logo_row = QHBoxLayout()
+        logo_row.setSpacing(10)
+        logo_row.addWidget(self._row_label(_tr("Logo")))
+        logo_row.addWidget(self.rgb_color_btn)
+        logo_row.addWidget(self.rgb_slider, 1)
+        logo_row.addWidget(self.rgb_label)
+
+        # Mic zone
+        self.mic_color_btn = ColorSwatch()
+        self.mic_color_btn.setToolTip(_tr("Pick Microphone Color"))
         self.mic_color_btn.clicked.connect(self.choose_mic_color)
-        self.mic_color_preview = QLabel(" ")
-        self.mic_color_preview.setFixedSize(30, 20)
-        self.mic_color_preview.setStyleSheet("background-color: #ff0000; border: 1px solid black;")
-        mic_color_row.addWidget(QLabel(_tr("Color:")))
-        mic_color_row.addWidget(self.mic_color_preview)
-        mic_color_row.addWidget(self.mic_color_btn)
-        
+        self.mic_slider = self._make_slider(100, self.change_rgb)
+        self.mic_label = self._value_label("100%")
+
+        mic_row = QHBoxLayout()
+        mic_row.setSpacing(10)
+        mic_row.addWidget(self._row_label(_tr("Mic")))
+        mic_row.addWidget(self.mic_color_btn)
+        mic_row.addWidget(self.mic_slider, 1)
+        mic_row.addWidget(self.mic_label)
+
+        # Profiles: three load buttons plus one save menu, rather than the
+        # six buttons this used to be.
+        self.profile_btn_1 = QPushButton("1")
+        self.profile_btn_2 = QPushButton("2")
+        self.profile_btn_3 = QPushButton("3")
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(6)
+        profile_row.addWidget(self._row_label(_tr("Profiles")))
+        for i, btn in enumerate((self.profile_btn_1, self.profile_btn_2,
+                                 self.profile_btn_3), start=1):
+            btn.setObjectName("Profile")
+            btn.setFixedWidth(42)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(_tr(f"Load Profile {i}"))
+            btn.clicked.connect(lambda _checked, n=i: self.load_profile(n))
+            profile_row.addWidget(btn)
+        profile_row.addStretch()
+
+        self.save_profile_btn = QToolButton()
+        self.save_profile_btn.setObjectName("SaveMenu")
+        self.save_profile_btn.setText(f"{_tr('Save')}  ▾")
+        self.save_profile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_profile_btn.setToolTip(_tr("Save current lighting to a profile"))
+        self.save_profile_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.save_menu = QMenu(self)
+        for i in (1, 2, 3):
+            act = QAction(_tr(f"Save to Profile {i}"), self)
+            act.triggered.connect(lambda _checked, n=i: self.save_profile(n))
+            self.save_menu.addAction(act)
+        self.save_profile_btn.setMenu(self.save_menu)
+        profile_row.addWidget(self.save_profile_btn)
+
+        card.body.addLayout(logo_row)
+        card.body.addLayout(mic_row)
+        card.body.addLayout(profile_row)
+        return card
+
+    def _build_mic_card(self):
+        card = Card(_tr("Microphone"))
+
+        # Mute state was previously only visible in the tray menu; the physical
+        # button is the only control, so the window should at least report it.
+        self.mic_state_dot = StatusDot()
+        self.mic_state_label = QLabel(_tr("Active"))
+        state_row = QHBoxLayout()
+        state_row.setSpacing(8)
+        state_row.addWidget(self._row_label(_tr("Status")))
+        state_row.addWidget(self.mic_state_dot)
+        state_row.addWidget(self.mic_state_label)
+        state_row.addStretch()
+
         # Colour the mic LED takes while muted (red on Windows, but yours).
-        mic_mute_color_row = QHBoxLayout()
-        self.mic_mute_color_btn = QPushButton(_tr("Pick Mute Color"))
+        self.mic_mute_color_btn = ColorSwatch()
+        self.mic_mute_color_btn.setToolTip(_tr("Pick Mute Color"))
         self.mic_mute_color_btn.clicked.connect(self.choose_mic_mute_color)
-        self.mic_mute_color_preview = QLabel(" ")
-        self.mic_mute_color_preview.setFixedSize(30, 20)
-        self.mic_mute_color_preview.setStyleSheet(
-            "background-color: #ff0000; border: 1px solid black;")
-        mic_mute_color_row.addWidget(QLabel(_tr("Muted color:")))
-        mic_mute_color_row.addWidget(self.mic_mute_color_preview)
-        mic_mute_color_row.addWidget(self.mic_mute_color_btn)
-        mic_lay.addLayout(mic_mute_color_row)
+        mute_color_row = QHBoxLayout()
+        mute_color_row.setSpacing(10)
+        mute_color_row.addWidget(self._row_label(_tr("Muted")))
+        mute_color_row.addWidget(self.mic_mute_color_btn)
+        mute_color_row.addStretch()
 
         self.mic_tone_cb = QCheckBox(_tr("Mute feedback sound"))
         self.mic_tone_cb.setChecked(True)
         self.mic_tone_cb.toggled.connect(self._save_settings)
-        mic_lay.addWidget(self.mic_tone_cb)
 
-        mic_slider_row = QHBoxLayout()
-        self.mic_slider = QSlider(Qt.Orientation.Horizontal)
-        self.mic_slider.setRange(0, 100)
-        self.mic_slider.setValue(100)
-        self.mic_slider.valueChanged.connect(self.change_rgb)
-        self.mic_label = QLabel("100%")
-        self.mic_label.setFixedWidth(40)
-        mic_slider_row.addWidget(self.mic_slider)
-        mic_slider_row.addWidget(self.mic_label)
-        
-        mic_lay.addLayout(mic_color_row)
-        mic_lay.addWidget(QLabel(_tr("Brightness:")))
-        mic_lay.addLayout(mic_slider_row)
-        mic_group.setLayout(mic_lay)
-        layout.addWidget(mic_group)
+        card.body.addLayout(state_row)
+        card.body.addLayout(mute_color_row)
+        card.body.addWidget(self.mic_tone_cb)
+        return card
 
-        # --- RGB Lighting ---
-        rgb_group = QGroupBox(_tr("RGB Lighting"))
-        rgb_lay = QVBoxLayout()
-        
-        rgb_color_row = QHBoxLayout()
-        self.rgb_color_btn = QPushButton(_tr("Pick Color"))
-        self.rgb_color_btn.clicked.connect(self.choose_color)
-        self.rgb_color_preview = QLabel(" ")
-        self.rgb_color_preview.setFixedSize(30, 20)
-        self.rgb_color_preview.setStyleSheet("background-color: #ff0000; border: 1px solid black;")
-        rgb_color_row.addWidget(QLabel(_tr("Color:")))
-        rgb_color_row.addWidget(self.rgb_color_preview)
-        rgb_color_row.addWidget(self.rgb_color_btn)
-        
-        rgb_slider_row = QHBoxLayout()
-        self.rgb_slider = QSlider(Qt.Orientation.Horizontal)
-        self.rgb_slider.setRange(0, 100)
-        self.rgb_slider.setValue(100)
-        self.rgb_slider.valueChanged.connect(self.change_rgb)
-        self.rgb_label = QLabel("100%")
-        self.rgb_label.setFixedWidth(40)
-        rgb_slider_row.addWidget(self.rgb_slider)
-        rgb_slider_row.addWidget(self.rgb_label)
-        
-        rgb_lay.addLayout(rgb_color_row)
-        rgb_lay.addWidget(QLabel(_tr("Brightness:")))
-        rgb_lay.addLayout(rgb_slider_row)
-        
-        # Profiles
-        profile_row = QHBoxLayout()
-        self.profile_btn_1 = QPushButton(_tr("Profile 1"))
-        self.profile_btn_2 = QPushButton(_tr("Profile 2"))
-        self.profile_btn_3 = QPushButton(_tr("Profile 3"))
-        self.profile_btn_1.clicked.connect(lambda: self.load_profile(1))
-        self.profile_btn_2.clicked.connect(lambda: self.load_profile(2))
-        self.profile_btn_3.clicked.connect(lambda: self.load_profile(3))
-        profile_row.addWidget(self.profile_btn_1)
-        profile_row.addWidget(self.profile_btn_2)
-        profile_row.addWidget(self.profile_btn_3)
-        
-        save_profile_row = QHBoxLayout()
-        self.save_p1 = QPushButton(_tr("Save 1"))
-        self.save_p2 = QPushButton(_tr("Save 2"))
-        self.save_p3 = QPushButton(_tr("Save 3"))
-        self.save_p1.clicked.connect(lambda: self.save_profile(1))
-        self.save_p2.clicked.connect(lambda: self.save_profile(2))
-        self.save_p3.clicked.connect(lambda: self.save_profile(3))
-        save_profile_row.addWidget(self.save_p1)
-        save_profile_row.addWidget(self.save_p2)
-        save_profile_row.addWidget(self.save_p3)
+    def _build_sidetone_card(self):
+        card = Card(_tr("Sidetone"))
 
-        rgb_lay.addLayout(profile_row)
-        rgb_lay.addLayout(save_profile_row)
-
-        rgb_group.setLayout(rgb_lay)
-        layout.addWidget(rgb_group)
-
-        # --- Sidetone ---
-        side_group = QGroupBox(_tr("Sidetone"))
-        side_lay = QVBoxLayout()
-
-        method_row = QHBoxLayout()
-        self.side_method_group = QButtonGroup()
-        self.side_alsa_radio = QRadioButton("ALSA")
-        self.side_v2w_radio = QRadioButton("V2W HID")
+        # Backend picker, drawn as a segmented control in the card header.
+        # Checkable buttons rather than radios: same isChecked/setChecked/
+        # toggled API, but stylable into a joined pair (a QRadioButton keeps
+        # drawing its dot however hard QSS tries to collapse the indicator).
+        self.side_method_group = QButtonGroup(self)
+        self.side_method_group.setExclusive(True)
+        self.side_alsa_radio = QPushButton("ALSA")
+        self.side_alsa_radio.setObjectName("SegLeft")
+        self.side_v2w_radio = QPushButton("V2W HID")
+        self.side_v2w_radio.setObjectName("SegRight")
+        for btn in (self.side_alsa_radio, self.side_v2w_radio):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(_tr("Method:"))
+            self.side_method_group.addButton(btn)
         self.side_alsa_radio.setChecked(True)
-        self.side_method_group.addButton(self.side_alsa_radio)
-        self.side_method_group.addButton(self.side_v2w_radio)
         self.side_alsa_radio.toggled.connect(self._save_settings)
-        method_row.addWidget(QLabel(_tr("Method:")))
-        method_row.addWidget(self.side_alsa_radio)
-        method_row.addWidget(self.side_v2w_radio)
-        method_row.addStretch()
-        side_lay.addLayout(method_row)
+
+        seg = QWidget()
+        seg_lay = QHBoxLayout(seg)
+        seg_lay.setContentsMargins(0, 0, 0, 0)
+        seg_lay.setSpacing(0)   # the two halves share a border
+        seg_lay.addWidget(self.side_alsa_radio)
+        seg_lay.addWidget(self.side_v2w_radio)
+        card.add_header_widget(seg)
 
         self.side_toggle = QPushButton(_tr("Disable Sidetone"))
+        self.side_toggle.setObjectName("Primary")
         self.side_toggle.setCheckable(True)
+        self.side_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.side_toggle.clicked.connect(self.toggle_sidetone)
 
-        side_slider_row = QHBoxLayout()
-        self.side_slider = QSlider(Qt.Orientation.Horizontal)
-        self.side_slider.setRange(0, 100)
-        self.side_slider.setValue(70)
-        self.side_slider.valueChanged.connect(self.change_sidetone)
-        self.side_label = QLabel("70%")
-        self.side_label.setFixedWidth(40)
-        side_slider_row.addWidget(self.side_slider)
-        side_slider_row.addWidget(self.side_label)
+        self.side_slider = self._make_slider(70, self.change_sidetone)
+        self.side_label = self._value_label("70%")
+        level_row = QHBoxLayout()
+        level_row.setSpacing(10)
+        level_row.addWidget(self._row_label(_tr("Level")))
+        level_row.addWidget(self.side_slider, 1)
+        level_row.addWidget(self.side_label)
 
         self.side_exit_cb = QCheckBox(_tr("Turn off when closing the app"))
         self.side_exit_cb.setChecked(True)
         self.side_exit_cb.toggled.connect(self._save_settings)
-        side_lay.addWidget(self.side_exit_cb)
 
-        side_lay.addWidget(self.side_toggle)
-        side_lay.addWidget(QLabel(_tr("Level:")))
-        side_lay.addLayout(side_slider_row)
-        side_group.setLayout(side_lay)
-        layout.addWidget(side_group)
+        card.body.addWidget(self.side_toggle)
+        card.body.addLayout(level_row)
+        card.body.addWidget(self.side_exit_cb)
+        return card
 
-        # --- Volume ---
-        vol_group = QGroupBox(_tr("Volume"))
-        vol_lay = QHBoxLayout()
-        self.vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vol_slider.setRange(0, 100)
-        self.vol_slider.setValue(70)
-        self.vol_slider.valueChanged.connect(self.change_volume)
-        self.vol_label = QLabel("70%")
-        self.vol_label.setFixedWidth(40)
-        vol_lay.addWidget(self.vol_slider)
-        vol_lay.addWidget(self.vol_label)
-        vol_group.setLayout(vol_lay)
-        layout.addWidget(vol_group)
-
-        layout.addStretch()
+    def _build_volume_card(self):
+        card = Card(_tr("Volume"))
+        self.vol_slider = self._make_slider(70, self.change_volume)
+        self.vol_label = self._value_label("70%")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self.vol_slider, 1)
+        row.addWidget(self.vol_label)
+        card.body.addLayout(row)
+        return card
 
     # ─── Tray with quick actions ───────────────────────────────────
 
@@ -641,18 +1366,17 @@ class VirtuosoGUI(QMainWindow):
 
         mute_hex = s.value("mic_mute_color", "#ff0000", type=str)
         self._mic_mute_color = QColor(mute_hex)
-        self.mic_mute_color_preview.setStyleSheet(
-            f"background-color: {mute_hex}; border: 1px solid black;")
+        self.mic_mute_color_btn.set_color(self._mic_mute_color)
         self.mic_tone_cb.setChecked(s.value("mic_tone", True, type=bool))
         self.side_exit_cb.setChecked(s.value("sidetone_off_on_exit", True, type=bool))
 
         mic_hex = s.value("mic_color", "#ff0000", type=str)
         self._current_mic_color = QColor(mic_hex)
         self.mic_slider.setValue(s.value("mic_brightness", 100, type=int))
-        self.mic_color_preview.setStyleSheet(f"background-color: {mic_hex}; border: 1px solid black;")
+        self.mic_color_btn.set_color(self._current_mic_color)
         self.mic_label.setText(f"{self.mic_slider.value()}%")
         self.rgb_slider.setValue(s.value("rgb_brightness", 100, type=int))
-        self.rgb_color_preview.setStyleSheet(f"background-color: {color_hex}; border: 1px solid black;")
+        self.rgb_color_btn.set_color(self._current_color)
         self.rgb_label.setText(f"{self.rgb_slider.value()}%")
 
         # Actualizar labels
@@ -723,37 +1447,37 @@ class VirtuosoGUI(QMainWindow):
             self._update_status(False)
             self.reconnect_timer.start(3000)
 
+    def _set_status(self, text, color_key):
+        """Header indicator: coloured dot plus plain text, no emoji."""
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {THEME[color_key]};")
+        self.status_dot.set_color(c(color_key))
+
+    def _set_v2w_controls_enabled(self, enabled):
+        """Enables/disables everything that needs a live V2W link."""
+        for w in (self.batt_btn, self.mic_color_btn, self.mic_slider,
+                  self.rgb_color_btn, self.rgb_slider, self.mic_mute_color_btn,
+                  self.profile_btn_1, self.profile_btn_2, self.profile_btn_3,
+                  self.save_profile_btn):
+            w.setEnabled(enabled)
+
     def _update_status(self, connected):
         if connected:
-            self.status_label.setText(f"🟢 {_tr('Connected')} — {_tr(self.ctrl.connection_mode)}")
-            self.status_label.setStyleSheet(
-                "font-weight: bold; padding: 4px; color: #2ecc71;")
-                
+            self._set_status(
+                f"{_tr('Connected')} · {_tr(self.ctrl.connection_mode)}", "ok")
+
             # Disable V2W controls if on wired mode
             is_wired = "Wired" in self.ctrl.connection_mode
-            self.batt_btn.setDisabled(is_wired)
-            self.mic_color_btn.setDisabled(is_wired)
-            self.mic_slider.setDisabled(is_wired)
-            self.rgb_color_btn.setDisabled(is_wired)
-            self.rgb_slider.setDisabled(is_wired)
-            
-            if is_wired:
-                self.batt_label.setText(_tr("🔋 Battery: N/A (Wired)"))
-                self.tray_batt_action.setText(_tr("🔋 Battery: N/A (Wired)"))
-                self._last_battery_percent = None
-                self._refresh_battery_icon()
+            self._set_v2w_controls_enabled(not is_wired)
 
+            if is_wired:
+                self._update_battery_display(_tr("N/A (Wired)"))
         else:
-            self.status_label.setText(_tr("🔴 Disconnected — Searching for device..."))
-            self.status_label.setStyleSheet(
-                "font-weight: bold; padding: 4px; color: #e74c3c;")
-            self.batt_btn.setDisabled(True)
-            self.mic_color_btn.setDisabled(True)
-            self.mic_slider.setDisabled(True)
-            self.rgb_color_btn.setDisabled(True)
-            self.rgb_slider.setDisabled(True)
-            self._last_battery_percent = None
-            self._refresh_battery_icon()
+            self._set_status(
+                f"{_tr('Disconnected')} · {_tr('Searching for device...')}",
+                "danger")
+            self._set_v2w_controls_enabled(False)
+            self._update_battery_display(_tr("Not connected"))
 
     def _on_connection_lost(self):
         self._hid_connected = False
@@ -763,8 +1487,7 @@ class VirtuosoGUI(QMainWindow):
             self.reconnect_timer.start(3000)
 
     def force_reconnect(self):
-        self.status_label.setText(_tr("⏳ Connecting..."))
-        self.status_label.setStyleSheet("font-weight: bold; padding: 4px; color: #f39c12;")
+        self._set_status(_tr("Connecting..."), "warn")
         # Use singleShot to allow UI to paint before blocking
         QTimer.singleShot(50, self.try_reconnect)
 
@@ -798,7 +1521,7 @@ class VirtuosoGUI(QMainWindow):
         color = QColorDialog.getColor(self._current_color, self, _tr("Pick Logo Color"))
         if color.isValid():
             self._current_color = color
-            self.rgb_color_preview.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
+            self.rgb_color_btn.set_color(color)
             self.apply_rgb()
             self._save_settings()
 
@@ -813,8 +1536,7 @@ class VirtuosoGUI(QMainWindow):
                                       _tr("Pick Mute Color"))
         if color.isValid():
             self._mic_mute_color = color
-            self.mic_mute_color_preview.setStyleSheet(
-                f"background-color: {color.name()}; border: 1px solid black;")
+            self.mic_mute_color_btn.set_color(color)
             self.apply_rgb()  # visible immediately if currently muted
             self._save_settings()
 
@@ -822,7 +1544,7 @@ class VirtuosoGUI(QMainWindow):
         color = QColorDialog.getColor(self._current_mic_color, self, _tr("Pick Microphone Color"))
         if color.isValid():
             self._current_mic_color = color
-            self.mic_color_preview.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
+            self.mic_color_btn.set_color(color)
             self.apply_rgb()
             self._save_settings()
 
@@ -884,8 +1606,8 @@ class VirtuosoGUI(QMainWindow):
         self._current_mic_color = QColor(s.value(f"profile_{index}_mic_color", "#ff0000", type=str))
         self.mic_slider.setValue(s.value(f"profile_{index}_mic_brightness", 100, type=int))
         
-        self.rgb_color_preview.setStyleSheet(f"background-color: {self._current_color.name()}; border: 1px solid black;")
-        self.mic_color_preview.setStyleSheet(f"background-color: {self._current_mic_color.name()}; border: 1px solid black;")
+        self.rgb_color_btn.set_color(self._current_color)
+        self.mic_color_btn.set_color(self._current_mic_color)
         self.rgb_label.setText(f"{self.rgb_slider.value()}%")
         self.mic_label.setText(f"{self.mic_slider.value()}%")
         
@@ -921,10 +1643,16 @@ class VirtuosoGUI(QMainWindow):
             self.ctrl.play_mic_tone(muted)
 
     def _sync_mic_status(self):
-        """Updates the read-only mic indicator in the tray."""
+        """Updates the read-only mic indicator in the window and the tray."""
         if hasattr(self, "tray_mic_status"):
             self.tray_mic_status.setText(
                 _tr("🎤 Mic: Muted") if self._mic_muted else _tr("🎤 Mic: Active"))
+
+        key = "danger" if self._mic_muted else "ok"
+        self.mic_state_dot.set_color(c(key))
+        self.mic_state_label.setText(
+            _tr("Muted") if self._mic_muted else _tr("Active"))
+        self.mic_state_label.setStyleSheet(f"color: {THEME[key]}; font-weight: 600;")
 
     def _sync_mic_from_pw(self):
         """Seeds our state from PipeWire so the LED matches at startup."""
@@ -1060,7 +1788,6 @@ class VirtuosoGUI(QMainWindow):
 
     def _update_battery_display(self, battery_str):
         """Updates battery level in window, tray tooltip and menu."""
-        self.batt_label.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_batt_action.setText(f"🔋 {_tr('Battery')}: {battery_str}")
         self.tray_icon.setToolTip(f"Virtuoso Control — {battery_str}")
         if self.batt_tray_icon is not None:
@@ -1074,6 +1801,22 @@ class VirtuosoGUI(QMainWindow):
         except (ValueError, IndexError):
             self._last_battery_percent = None
             self._last_charging = False
+
+        # The card splits the reading the tray shows as one string: the number
+        # goes in the big label, whatever follows it ("[Discharging]") in the
+        # small one. Non-numeric readings ("Not connected") have no number, so
+        # the whole string becomes the small label.
+        if self._last_battery_percent is None:
+            self.batt_percent.setText("—")
+            self.batt_label.setText(battery_str)
+        else:
+            self.batt_percent.setText(f"{self._last_battery_percent}%")
+            tail = battery_str.split("%", 1)[1].strip().strip("[]").strip()
+            self.batt_label.setText(tail)
+
+        self.batt_gauge.set_state(self._last_battery_percent, self._last_charging)
+        self.batt_percent.setStyleSheet(
+            f"color: {self.batt_gauge.level_color().name()};")
         self._refresh_battery_icon()
 
     def _check_low_battery(self, battery_str):
@@ -1133,6 +1876,7 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("virtuoso-control")
+    apply_theme(app)   # follows the desktop's light/dark preference
 
     gui = VirtuosoGUI()
     
