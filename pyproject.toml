@@ -1,0 +1,18 @@
+[project]
+name = "virtuoso-control"
+version = "1.0.0"
+description = "Lightweight control panel for Corsair Virtuoso headsets on Linux"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "hidapi>=0.14.0",
+    "PyQt6>=6.5.0",
+]
+
+[project.scripts]
+virtuoso-control = "virtuoso_gui:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
