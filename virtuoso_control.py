@@ -84,10 +84,10 @@ class VirtuosoController:
     def _find_path(self):
         """Finds the HID path for the Virtuoso.
 
-        Tries interface 3 first (Slipstream Multi-Device Receiver),
-        then falls back to interface 4 (other models).
+        Tries interface 4 first (standard models), then falls back
+        to interface 3 (Slipstream Multi-Device Receiver).
         """
-        for iface in [3, 4]:
+        for iface in [4, 3]:
             for pid, mode in PRODUCT_IDS.items():
                 for d in hid.enumerate(VENDOR_ID, pid):
                     if d['interface_number'] == iface:
