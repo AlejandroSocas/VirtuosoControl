@@ -4,18 +4,20 @@ A lightweight, persistent, and native control panel for the Corsair Virtuoso SE/
 
 > **Note:** This entire application was "vibecoded" from scratch by Alejandro Socas with the assistance and auditing of Google's Gemini AI agent. 
 
-![Virtuoso Control UI](screenshot.png)
+![Virtuoso Control UI — the same window in the dark and light themes](screenshot.png)
 
 ## Key Features
 
+*   **Theme-Aware Interface:** The UI follows your desktop's light or dark preference automatically, and switches live if you change it — no restart needed. Everything is laid out as compact cards: connection status, a battery gauge, lighting, microphone, sidetone and volume.
 *   **Accurate Battery Monitor:** Reads the actual battery level reliably, displaying stable percentages and charging status. Sends a desktop notification if the battery drops below 15%. Also, the physical hardware battery LED will accurately reflect its level (Green, Yellow, or Red)!
 *   **Smart Battery Polling:** To prevent the headset from emitting annoying "reconnection beeps" when the battery is low (<15%), the application automatically suspends wireless battery polling until you connect the USB cable to charge.
 *   **Dynamic Tray Icon:** The system tray icon acts as a live battery indicator, dynamically filling up and changing colors (Green, Yellow, Red, or Blue when charging) based on the headset's battery level.
-*   **Full RGB Lighting & Profiles:** Control the exact color and brightness of both the side Logo and the Microphone LED through native color pickers (wireless mode only). You can save up to 3 custom **RGB Profiles** and switch between them instantly using the system tray context menu!
+*   **Full RGB Lighting & Profiles:** Control the exact color and brightness of both the side Logo and the Microphone LED through native color pickers (wireless mode only). You can save up to 3 custom **RGB Profiles** and switch between them instantly, either from the numbered buttons in the Lighting card or from the system tray context menu!
+*   **Physical Mic-Mute Button:** The headset's own mute button keeps working. The app follows it, mutes the input, switches the mic LED to your chosen "muted" colour, and plays a feedback tone — with the current state shown in both the window and the tray.
 *   **Dual-Mode Support (Wired / Dongle):** Automatically detects whether you are using the Wireless Dongle or connected directly via USB cable. The UI seamlessly adapts by disabling unsupported V2W wireless features in wired mode.
 *   **Bilingual Support (English & Spanish):** Seamlessly switch the application language between English and Spanish directly from the Settings menu.
 *   **Sidetone & Volume:** Independent control of sidetone and volume using native ALSA or direct V2W hardware commands.
-*   **Universal Autostart (FreeDesktop):** Configure the app from the internal settings panel (`⚙`) to automatically start in the background every time you boot your PC (fully compatible with GNOME, KDE, XFCE, and any modern desktop).
+*   **Universal Autostart (FreeDesktop):** Configure the app from the internal settings panel (the sliders button in the window header) to automatically start in the background every time you boot your PC (fully compatible with GNOME, KDE, XFCE, and any modern desktop).
 *   **Start Minimized:** Option to launch the application directly into the system tray, keeping your screen clean.
 *   **System Tray Integration:** Access all quick functions and the settings panel directly from your taskbar.
 *   **Persistent Connection:** Keeps the HID session alive using a *heartbeat*, preventing unexpected device sleep disconnections (matching the behavior of the official Windows software).
