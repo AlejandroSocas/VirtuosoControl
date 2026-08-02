@@ -769,7 +769,23 @@ class SettingsDialog(QDialog):
         if self.autostart_cb.isChecked():
             if not os.path.exists(autostart_dir):
                 os.makedirs(autostart_dir)
-            desktop_content = "[Desktop Entry]\nName=Virtuoso Control\nComment=Panel de control nativo para los auriculares Corsair Virtuoso SE\nExec=python3 /opt/virtuoso-control/virtuoso_gui.py\nIcon=/opt/virtuoso-control/virtuoso_icon.png\nTerminal=false\nType=Application\nCategories=Audio;Settings;HardwareSettings;\nStartupWMClass=virtuoso-control\n"
+            # Icon is the themed NAME, matching install.sh. An absolute path
+            # here gets cached by the shell and goes stale when the file is
+            # replaced. Resolving it needs install.sh to have run — as does
+            # the hardcoded Exec path just below it.
+            desktop_content = (
+                "[Desktop Entry]\n"
+                "Name=Virtuoso Control\n"
+                "Comment=Native control panel for Corsair Virtuoso SE headset\n"
+                "Exec=python3 /opt/virtuoso-control/virtuoso_gui.py\n"
+                "Icon=virtuoso-control\n"
+                "Terminal=false\n"
+                "Type=Application\n"
+                # "Audio" alone is invalid without "AudioVideo" — the spec
+                # validator flags it as an error that will become fatal.
+                "Categories=AudioVideo;Audio;Settings;HardwareSettings;\n"
+                "StartupWMClass=virtuoso-control\n"
+            )
             with open(autostart_path, "w") as f:
                 f.write(desktop_content)
         else:

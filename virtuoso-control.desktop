@@ -2,8 +2,8 @@
 Name=Virtuoso Control
 Comment=Native control panel for Corsair Virtuoso SE headset
 Exec=python3 /opt/virtuoso-control/virtuoso_gui.py
-Icon=/opt/virtuoso-control/virtuoso_icon.png
+Icon=virtuoso-control
 Terminal=false
 Type=Application
-Categories=Audio;Settings;HardwareSettings;
+Categories=AudioVideo;Audio;Settings;HardwareSettings;
 StartupWMClass=virtuoso-control
