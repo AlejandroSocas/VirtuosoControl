@@ -81,19 +81,40 @@ class VirtuosoController:
 
     # ─── Connection Management ───────────────────────────────────────
 
-    def _find_path(self):
-        """Finds the HID path for the Virtuoso.
-
-        Tries interface 4 first (standard models), then falls back
-        to interface 3 (Slipstream Multi-Device Receiver).
-        """
+    def _find_candidates(self):
+        """Returns candidate (path, mode) tuples, interface 4 first."""
+        candidates = []
         for iface in [4, 3]:
             for pid, mode in PRODUCT_IDS.items():
                 for d in hid.enumerate(VENDOR_ID, pid):
                     if d['interface_number'] == iface:
-                        self.connection_mode = mode
-                        return d['path']
-        return None
+                        candidates.append((d['path'], mode))
+        return candidates
+
+    def _probe_interface(self, dev):
+        """Sends a firmware-version request and checks for a response.
+
+        Some dongles (e.g. Slipstream Multi-Device Receiver) expose both
+        HID interfaces 3 and 4, but only one carries V2W traffic. The
+        wrong interface accepts writes silently and never replies. This
+        probe distinguishes the two in ~50 ms.
+        """
+        # Temporarily mount dev so _send_v2w can write to it.
+        saved, self.device = self.device, dev
+        try:
+            if not self._send_v2w(EP_RECEIVER, CMD_SET, [0x13]):
+                return False
+            for _ in range(5):
+                time.sleep(0.01)
+                try:
+                    data = dev.read(64)
+                    if data:
+                        return True
+                except Exception:
+                    return False
+            return False
+        finally:
+            self.device = saved
 
     @property
     def is_connected(self):
@@ -112,29 +133,33 @@ class VirtuosoController:
         if self.is_connected:
             return True
 
-        path = self._find_path()
-        if not path:
-            return False
+        for path, mode in self._find_candidates():
+            try:
+                dev = hid.device()
+                dev.open_path(path)
+                dev.set_nonblocking(True)
+            except Exception as e:
+                print(f"Error opening {path}: {e}", file=sys.stderr)
+                continue
 
-        try:
-            self.device = hid.device()
-            self.device.open_path(path)
-            self.device.set_nonblocking(True)
-            self._connected = True
-            # We DO NOT handshake here — it will be done lazily when needed.
-            # This prevents the LED from turning off when starting the app.
-            return True
-        except Exception as e:
-            print(f"Error connecting: {e}", file=sys.stderr)
-            self._connected = False
-            self.device = None
-            return False
+            if self._probe_interface(dev):
+                self.device = dev
+                self.connection_mode = mode
+                self._connected = True
+                return True
+            dev.close()
+
+        return False
 
     def _ensure_handshake(self):
         """Performs the V2W handshake if not done yet.
 
         Called automatically before any operation that
         needs it (LED, battery, V2W sidetone, heartbeat).
+
+        The handshake is intentionally deferred from connect(): sending it
+        immediately would put the headset into software mode, which turns
+        the dongle LED off until disconnect.
         """
         if self._handshake_done:
             return True
