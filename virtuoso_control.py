@@ -104,8 +104,8 @@ class VirtuosoController:
         try:
             if not self._send_v2w(EP_RECEIVER, CMD_SET, [0x13]):
                 return False
-            for _ in range(5):
-                time.sleep(0.01)
+            for _ in range(10):
+                time.sleep(0.02)
                 try:
                     data = dev.read(64)
                     if data:
