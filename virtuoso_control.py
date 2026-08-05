@@ -213,6 +213,7 @@ class VirtuosoController:
             self.device = None
         self._connected = False
         self._handshake_done = False
+        self._leds_initialized = False
 
     def reconnect(self):
         """Reconnects to the device (e.g. if connection was lost)."""
@@ -308,7 +309,12 @@ class VirtuosoController:
 
     def _init_leds(self):
         """Initializes the LED endpoint (necessary for RGB control)."""
-        return self._send_v2w(EP_HEADSET, 0x0d, [0x00, 0x01])
+        if getattr(self, '_leds_initialized', False):
+            return True
+        ok = self._send_v2w(EP_HEADSET, 0x0d, [0x00, 0x01])
+        if ok:
+            self._leds_initialized = True
+        return ok
 
     def set_all_rgb(self, logo_rgb, logo_b, mic_rgb, mic_b, batt_rgb, batt_b):
         """Adjusts the RGB color of all zones simultaneously.
