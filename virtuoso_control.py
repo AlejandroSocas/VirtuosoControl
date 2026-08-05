@@ -332,9 +332,9 @@ class VirtuosoController:
         
         data = [0] * 9
         
-        # Helper to scale and assign
+        # Helper to scale and assign using perceptual (quadratic) scaling
         def _apply_zone(idx, rgb_tuple, brightness):
-            scale = brightness / 100.0
+            scale = (brightness / 100.0) ** 2.0
             data[idx] = int(rgb_tuple[0] * scale)
             data[idx + 3] = int(rgb_tuple[1] * scale)
             data[idx + 6] = int(rgb_tuple[2] * scale)
