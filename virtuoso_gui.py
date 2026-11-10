@@ -18,12 +18,13 @@ import math
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
                              QFrame, QSystemTrayIcon, QMenu, QCheckBox,
-                             QButtonGroup, QColorDialog, QDialog,
+                             QButtonGroup, QColorDialog, QDialog, QMessageBox,
                              QComboBox, QAbstractButton, QToolButton, QSizePolicy)
 from PyQt6.QtCore import (Qt, QTimer, QSettings, QRectF, QLineF, QSize,
-                          QPointF)
+                          QPointF, QThread, QCoreApplication)
 from PyQt6.QtGui import (QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen,
                          QFont, QPalette, QPolygonF)
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from virtuoso_control import VirtuosoController
 
 TRANSLATIONS = {
@@ -88,6 +89,11 @@ TRANSLATIONS = {
         "Profile Saved": "Perfil Guardado",
         "Error": "Error",
         "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
+        "⚠️ Very Low Battery — Virtuoso SE": "⚠️ Batería Muy Baja — Virtuoso SE",
+        "The headset is at {}% battery.": "Los auriculares están al {}% de batería.",
+        "The headset is at {}% battery. Power saving mode enabled.": "Los auriculares están al {}% de batería. Ahorro de energía activado.",
+        "The application is already running.": "La aplicación ya está en ejecución.",
+        "Virtuoso Control is already running in the background or in the system tray.": "Virtuoso Control ya está activo en segundo plano o en la bandeja del sistema.",
         "Lighting": "Iluminación",
         "Logo": "Logo",
         "Mic": "Micrófono",
@@ -134,6 +140,7 @@ PALETTES = {
         "on_accent":   "#0d1117",
         "track":       "#2b3040",
         "ok":          "#35d07f",
+        "good":        "#ffff00",
         "warn":        "#f0b429",
         "danger":      "#ff5c5c",
         "handle":      "#f2f4f8",
@@ -151,6 +158,7 @@ PALETTES = {
         "on_accent":   "#ffffff",
         "track":       "#dde2ea",
         "ok":          "#12925a",
+        "good":        "#d4D400",
         "warn":        "#b8770a",
         "danger":      "#d0342c",
         "handle":      "#ffffff",
@@ -158,6 +166,22 @@ PALETTES = {
 }
 
 THEME = dict(PALETTES["dark"])
+
+# ─── Battery limit constants ────────────────────────────────────────
+BATT_LEVEL = {
+    "HIGH":       70,
+    "MEDIUM":     50,
+    "LOW":        20,
+    "NOTIFY_LOW": 15,  # For system notification.
+}
+
+# ─── Brightness level limits for LEDs ───────────────────────────────
+POWER_SAVING_BRIGHTNESS = {
+    "RGB_fixed":    0, # % Left and right LEDs.
+    "MIC_fixed":   25, # % Microphone LED.
+    "RGB_max":   0.25, # %/100
+    "MIC_max":   0.50, # %/100
+}
 
 
 def c(key):
@@ -650,9 +674,11 @@ class BatteryGauge(QWidget):
             return c("text_muted")
         if self._charging:
             return c("accent")
-        if self._percent > 50:
+        if self._percent >= BATT_LEVEL["HIGH"]:
             return c("ok")
-        if self._percent > 20:
+        if self._percent >= BATT_LEVEL["MEDIUM"]:
+            return c("good")
+        if self._percent >= BATT_LEVEL["LOW"]:
             return c("warn")
         return c("danger")
 
@@ -851,6 +877,7 @@ class VirtuosoGUI(QMainWindow):
         super().__init__()
         self.ctrl = VirtuosoController()
         self._hid_connected = False
+        self._low_battery_notified_0 = False
         self._low_battery_notified = False
         self._mic_muted = False  # mirrors the headset's reported mute state
         self._quitting = False
@@ -900,6 +927,11 @@ class VirtuosoGUI(QMainWindow):
         self.mic_button_timer = QTimer()
         self.mic_button_timer.timeout.connect(self._poll_mic_button)
         self.mic_button_timer.start(150)
+
+        # Timer: low battery status LED blinking
+        self._blink_state = False  # Alternate between True and False
+        self.blink_timer = QTimer()
+        self.blink_timer.timeout.connect(self._toggle_blink_led)
 
         # Connect and apply saved preferences
         self._try_initial_connect()
@@ -1575,13 +1607,41 @@ class VirtuosoGUI(QMainWindow):
     def do_keep_alive(self):
         if not self._hid_connected:
             return
-        # Check if the headset is actually responding (not just the dongle)
-        if not self.ctrl.is_headset_alive():
-            self._on_connection_lost()
+
+        # In wired mode, V2W heartbeat and queries are unsupported
+        if "Wired" in self.ctrl.connection_mode:
             return
-        # Headset is alive — send heartbeat and refresh RGB
-        self.ctrl.send_heartbeat()
-        self.apply_rgb()
+
+        # This sequence ensures that the connection is not lost after 5 minutes.
+        try:
+            # 1. Send the heartbeat first proactively
+            self.ctrl.send_heartbeat()
+
+            # 2. Refresh RGB
+            self.apply_rgb()
+
+            # 3. Allow a brief pause (100ms) for the dongle to process the previous steps.
+            QCoreApplication.processEvents()
+            QThread.msleep(100)
+
+            # 4. Robust verification (up to 3 attempts if the dongle is busy)
+            headset_alive = False
+            for _ in range(3):
+                if self.ctrl.is_headset_alive():
+                    headset_alive = True
+                    break
+                # If it returned a false negative, wait another 150ms before querying again.
+                QCoreApplication.processEvents()
+                QThread.msleep(150)
+
+            # If it still returns "False" after the 3 spaced-out attempts, then it has indeed disconnected.
+            if not headset_alive:
+                self._on_connection_lost()
+                return
+
+        except Exception:
+            # If any error occurs in the HID communication, safely disconnect.
+            self._on_connection_lost()
 
     # ─── Iluminación RGB ─────────────────────────────────────────────
 
@@ -1622,34 +1682,95 @@ class VirtuosoGUI(QMainWindow):
             batt_r, batt_g, batt_b = 0, 0, 0
             if self._last_battery_percent is not None:
                 p = self._last_battery_percent
-                if p >= 80:
-                    batt_g = 255
-                elif p >= 20:
-                    batt_r, batt_g = 255, 255
+                if p >= BATT_LEVEL["HIGH"]:
+                    batt_g = 255                # Green (70%-100%)
+                elif p >= BATT_LEVEL["MEDIUM"]:
+                    batt_r, batt_g = 255, 255   # Yellow (50%-69%)
+                elif p >= BATT_LEVEL["LOW"]:
+                    batt_r, batt_g = 255, 128   # Orange (20%-49%)
                 else:
-                    batt_r = 255
+                    # INTEGRATED BLINKING LOGIC.
+                    # If the cable is connected, we ignore the blinking and force a solid red.
+                    if self._last_charging:
+                        batt_r = 255            # Red (<20%) fixed
+                    # If it's disconnected, we allow normal blinking logic.
+                    elif self.blink_timer.isActive():
+                        if self._blink_state:
+                            batt_r = 255        # Red
+                        else:
+                            batt_r = 0          # Off
+                    else:
+                        batt_r = 255            # Red (<20%) fixed
 
-            # Muted mic goes red, matching iCUE on Windows/macOS. The saved
-            # colour is untouched and returns on unmute.
-            if self._mic_muted:
-                mic_rgb = (self._mic_mute_color.red(),
-                           self._mic_mute_color.green(),
-                           self._mic_mute_color.blue())
-                mic_brightness = 100
+            # --- POWER SAVING MODE (BATTERY < 15%) ---
+            # If the percentage is below the notification level, set the headset LEDs brightness to 0%.
+            if self._last_battery_percent is not None and self._last_battery_percent < BATT_LEVEL["NOTIFY_LOW"]:
+
+                # 1. Reducing the headset LEDs brightness at 0% of its corresponding value.
+                if not getattr(self, '_battery_low_forced_zero', False):
+                    self._brightness_snapshot_at_low = self.rgb_slider.value() # Saving slider value.
+                    self._battery_low_forced_zero = True
+                    self._user_interacted_with_slider = False # Flag to know if user changed the slider
+
+                # Check if the user has moved the slider away from the snapshot value
+                if not getattr(self, '_user_interacted_with_slider', False) and self.rgb_slider.value() != self._brightness_snapshot_at_low:
+                    self._user_interacted_with_slider = True
+
+                if not getattr(self, '_user_interacted_with_slider', False):
+                    rgb_brightness = POWER_SAVING_BRIGHTNESS["RGB_fixed"] # 0% of static brightness.
+                else:
+                    rgb_brightness = int(self.rgb_slider.value() * POWER_SAVING_BRIGHTNESS["RGB_max"]) # 25% of the slider value (new 100%).
+
+                # 2. Reducing the microphone brightness to 25% of its corresponding value.
+                # Muted mic goes red, matching iCUE on Windows/macOS. The saved
+                # colour is untouched and returns on unmute.
+                if self._mic_muted:
+                    mic_rgb = (self._mic_mute_color.red(),
+                               self._mic_mute_color.green(),
+                               self._mic_mute_color.blue())
+                    mic_brightness = POWER_SAVING_BRIGHTNESS["MIC_fixed"] # 25% of static brightness.
+                else:
+                    mic_rgb = (self._current_mic_color.red(),
+                               self._current_mic_color.green(),
+                               self._current_mic_color.blue())
+                    mic_brightness = int(self.mic_slider.value() * POWER_SAVING_BRIGHTNESS["MIC_max"]) # 50% of the slider value (new 100%).
+
             else:
-                mic_rgb = (self._current_mic_color.red(),
-                           self._current_mic_color.green(),
-                           self._current_mic_color.blue())
-                mic_brightness = self.mic_slider.value()
+                # Normal behavior if battery is >= 15%.
+                # If the battery level rises again (e.g., while charging), clear the flag for the next time.
+                if getattr(self, '_battery_low_forced_zero', False):
+                    self._battery_low_forced_zero = False
+                    self._user_interacted_with_slider = False  # Reset the interaction flag too.
+
+                rgb_brightness = self.rgb_slider.value()
+
+                # Muted mic goes red, matching iCUE on Windows/macOS. The saved
+                # colour is untouched and returns on unmute.
+                if self._mic_muted:
+                    mic_rgb = (self._mic_mute_color.red(),
+                               self._mic_mute_color.green(),
+                               self._mic_mute_color.blue())
+                    mic_brightness = 100
+                else:
+                    mic_rgb = (self._current_mic_color.red(),
+                               self._current_mic_color.green(),
+                               self._current_mic_color.blue())
+                    mic_brightness = self.mic_slider.value()
+            # -----------------------------------------------
 
             self.ctrl.set_all_rgb(
                 (self._current_color.red(), self._current_color.green(), self._current_color.blue()),
-                self.rgb_slider.value(),
+                rgb_brightness,
                 mic_rgb,
                 mic_brightness,
                 (batt_r, batt_g, batt_b),
                 100
             )
+
+    def _toggle_blink_led(self):
+        # Toggles the blinking state and updates the LEDs.
+        self._blink_state = not self._blink_state
+        self.apply_rgb()
 
     def save_profile(self, index):
         s = QSettings("VirtuosoControl", "VirtuosoControl")
@@ -1802,7 +1923,7 @@ class VirtuosoGUI(QMainWindow):
         if self._hid_connected and self.ctrl._handshake_done:
             # Smart Battery Polling: 
             # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
-            if self._last_battery_percent is not None and self._last_battery_percent < 15:
+            if self._last_battery_percent is not None and self._last_battery_percent < BATT_LEVEL["NOTIFY_LOW"]:
                 if not self.ctrl.is_usb_charging:
                     # Keep showing low battery, don't query headset
                     return
@@ -1835,13 +1956,15 @@ class VirtuosoGUI(QMainWindow):
         
         # Fill color
         if is_charging:
-            color = QColor(52, 152, 219) # Blue
-        elif percent > 50:
-            color = QColor(46, 204, 113) # Green
-        elif percent > 20:
-            color = QColor(241, 196, 15) # Yellow
+            color = QColor(52, 52, 255) # Blue (Charging)
+        elif percent >= BATT_LEVEL["HIGH"]:
+            color = QColor(46, 204, 113) # Green (70%-100%)
+        elif percent >= BATT_LEVEL["MEDIUM"]:
+            color = QColor(241, 196, 15) # Yellow (50%-69%)
+        elif percent >= BATT_LEVEL["LOW"]:
+            color = QColor(230, 126, 34) # Orange (20%-49%)
         else:
-            color = QColor(231, 76, 60) # Red
+            color = QColor(231, 76, 60)  # Red (<20%)
             
         painter.setBrush(QBrush(color))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -1888,24 +2011,46 @@ class VirtuosoGUI(QMainWindow):
         self._refresh_battery_icon()
 
     def _check_low_battery(self, battery_str):
-        """Shows desktop notification if battery < 15%."""
+        """Shows desktop notification if battery < 15% and controls blinking."""
         try:
             percent = int(battery_str.split("%")[0])
             self._last_battery_percent = percent
-            self.apply_rgb()  # Update LED battery state
         except (ValueError, IndexError):
             return
 
-        if percent < 15 and not self._low_battery_notified:
+        # --- Alert 1: Low Battery (< 20%) ---
+        if not self._last_charging and BATT_LEVEL["NOTIFY_LOW"] <= percent < BATT_LEVEL["LOW"] and not self._low_battery_notified_0:
             self.tray_icon.showMessage(
                 _tr("⚠️ Low Battery — Virtuoso SE"),
                 _tr("The headset is at {}% battery.").format(percent),
                 QSystemTrayIcon.MessageIcon.Warning,
                 10_000)
+            self._low_battery_notified_0 = True
+
+        # --- Blink Timer ---
+        if not self._last_charging and percent < BATT_LEVEL["LOW"]:
+            if not self.blink_timer.isActive():
+                self.blink_timer.start(500) # Blinking 0.5s
+        else:
+            if self.blink_timer.isActive():
+                self.blink_timer.stop() # Stopping Blinking
+
+        # --- Alert 2: Very Low Battery (< 15%) ---
+        if not self._last_charging and percent < BATT_LEVEL["NOTIFY_LOW"] and not self._low_battery_notified:
+            self.tray_icon.showMessage(
+                _tr("⚠️ Very Low Battery — Virtuoso SE"),
+                _tr("The headset is at {}% battery. Power saving mode enabled.").format(percent),
+                QSystemTrayIcon.MessageIcon.Warning,
+                10_000)
             self._low_battery_notified = True
-        elif percent >= 20:
-            # Reset flag when it goes up (e.g., charging)
+
+        # --- Resetting the flags ---
+        if self._last_charging or percent >= BATT_LEVEL["LOW"]:
+            # Reset flags when it goes up (e.g., charging)
+            self._low_battery_notified_0 = False
             self._low_battery_notified = False
+
+        self.apply_rgb() # Update LED battery state
 
     # ─── Lifecycle ───────────────────────────────────────────────────
 
@@ -1930,6 +2075,8 @@ class VirtuosoGUI(QMainWindow):
         self.reconnect_timer.stop()
         self.battery_timer.stop()
         self.mic_button_timer.stop()
+        if hasattr(self, "blink_timer"):
+            self.blink_timer.stop()
 
         # Sidetone is a mixer setting: it survives the app. Turn it off on the
         # way out so it cannot be left on with no UI around to switch it off.
@@ -1942,6 +2089,31 @@ class VirtuosoGUI(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("Virtuoso Control")
+
+    # --- Control de Instancia Única ---
+    socket_name = "VirtuosoControl_SingleInstance_Socket"
+    socket = QLocalSocket()
+    socket.connectToServer(socket_name)
+
+    # Si se conecta con éxito, ya hay otra instancia ejecutándose
+    if socket.waitForConnected(500):
+        apply_theme(app)
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Virtuoso Control")
+        msg.setText(_tr("The application is already running."))
+        msg.setInformativeText(_tr("Virtuoso Control is already running in the background or in the system tray."))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        sys.exit(0)
+
+    # Si no hay otra instancia, limpiar posible socket huérfano y escuchar
+    QLocalServer.removeServer(socket_name)
+    app.local_server = QLocalServer()
+    app.local_server.listen(socket_name)
+    # ----------------------------------
+
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("virtuoso-control")
     apply_theme(app)   # follows the desktop's light/dark preference
