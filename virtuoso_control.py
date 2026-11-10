@@ -21,12 +21,15 @@ PRODUCT_IDS = {
     0x0a3e: "Wireless",
     0x0a3f: "Wireless",
     0x0a42: "Wireless",
+    0x0a46: "Wireless",
     0x0a4a: "Wireless",
     0x0a63: "Wireless",
+    0x0a64: "Wireless",
     
     # Wired Connections / Direct USB headsets
     0x0a3d: "Wired",
     0x0a41: "Wired",
+    0x0a45: "Wired",
     0x0a49: "Wired",
     0x0a62: "Wired"
 }
@@ -82,9 +85,9 @@ class VirtuosoController:
     # ─── Connection Management ───────────────────────────────────────
 
     def _find_candidates(self):
-        """Returns candidate (path, mode) tuples, interface 4 first."""
+        """Returns candidate (path, mode) tuples, interface 4/3 for wireless, 0 for wired."""
         candidates = []
-        for iface in [4, 3]:
+        for iface in [4, 3, 0]:
             for pid, mode in PRODUCT_IDS.items():
                 for d in hid.enumerate(VENDOR_ID, pid):
                     if d['interface_number'] == iface:
@@ -142,7 +145,7 @@ class VirtuosoController:
                 print(f"Error opening {path}: {e}", file=sys.stderr)
                 continue
 
-            if self._probe_interface(dev):
+            if mode == "Wired" or self._probe_interface(dev):
                 self.device = dev
                 self.connection_mode = mode
                 self._connected = True
@@ -578,7 +581,7 @@ class VirtuosoController:
     def is_usb_charging(self):
         """Checks if the headset is physically connected via USB."""
         try:
-            wired_pids = [0x0a3d, 0x0a41, 0x0a49, 0x0a62]
+            wired_pids = [pid for pid, mode in PRODUCT_IDS.items() if mode == "Wired"]
             for d in hid.enumerate(VENDOR_ID):
                 if d['product_id'] in wired_pids:
                     return True
@@ -630,6 +633,8 @@ class VirtuosoController:
         """
         if not self.is_connected:
             return "Not connected"
+        if self.connection_mode == "Wired":
+            return "N/A (Wired)"
         if not self._ensure_handshake():
             return "Handshake error"
 
