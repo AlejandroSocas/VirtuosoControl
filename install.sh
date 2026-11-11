@@ -26,15 +26,19 @@ mkdir -p "$INSTALL_DIR"
 
 # Copy source files and assets. The app loads its own window/tray icon from
 # beside the script, so this copy is still needed alongside the themed one.
-echo "[*] Copying source files..."
+echo "[*] Copying source files and assets..."
 cp virtuoso_control.py "$INSTALL_DIR/"
 cp virtuoso_gui.py "$INSTALL_DIR/"
 cp virtuoso_icon.png "$INSTALL_DIR/"
+cp -r sounds "$INSTALL_DIR/"
+cp -r assets "$INSTALL_DIR/"
 
 # Set permissions
 chmod +x "$INSTALL_DIR/virtuoso_gui.py"
 chmod +x "$INSTALL_DIR/virtuoso_control.py"
 chmod 644 "$INSTALL_DIR/virtuoso_icon.png"
+chmod -R 755 "$INSTALL_DIR/sounds"
+chmod -R 755 "$INSTALL_DIR/assets"
 
 # Install the icon into the icon theme, under a NAME rather than a path.
 #

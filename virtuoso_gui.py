@@ -21,11 +21,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QButtonGroup, QColorDialog, QDialog, QMessageBox,
                              QComboBox, QAbstractButton, QToolButton, QSizePolicy)
 from PyQt6.QtCore import (Qt, QTimer, QSettings, QRectF, QLineF, QSize,
-                          QPointF, QThread, QCoreApplication)
+                          QPointF, QThread, QCoreApplication, QEvent)
 from PyQt6.QtGui import (QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen,
                          QFont, QPalette, QPolygonF)
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from virtuoso_control import VirtuosoController
+from virtuoso_control import VirtuosoController, EQ_PRESETS, EQ_FREQUENCIES, BATTERY_THRESHOLDS
 
 TRANSLATIONS = {
     "es": {
@@ -109,6 +109,30 @@ TRANSLATIONS = {
         "Brightness": "Brillo",
         "Method": "Método",
         "Status": "Estado",
+        "Sleep": "Reposo",
+        "Off": "Desactivado",
+        "Default": "Por defecto",
+        "Equalizer": "Ecualizador",
+        "Enable Equalizer": "Activar Ecualizador",
+        "Standby (Sleeping)": "En reposo (Standby)",
+        "Preset:": "Preset:",
+        "Export EasyEffects": "Exportar para EasyEffects",
+        "Exported EasyEffects preset to:": "Preset de EasyEffects exportado a:",
+        "Enable official voice prompts": "Activar avisos de voz oficiales (iCUE)",
+        "Voice Prompts": "Avisos de voz",
+        "Pure Direct": "Pure Direct",
+        "Movie Theater": "Cine",
+        "FPS Competition": "Competición FPS",
+        "Clear Chat": "Voz Clara",
+        "Bass Boost": "Realce de Graves",
+        "Custom": "Personalizado",
+        "Quick Colors": "Colores rápidos",
+        "Corsair Yellow": "Amarillo Corsair",
+        "Pure White": "Blanco Puro",
+        "Ice Blue": "Azul Glaciar",
+        "Red Alert": "Alerta Roja",
+        "Stealth (Off)": "Sigilo (Apagado)",
+        "Debug": "Depuración",
     }
 }
 
@@ -167,12 +191,12 @@ PALETTES = {
 
 THEME = dict(PALETTES["dark"])
 
-# ─── Battery limit constants ────────────────────────────────────────
+# ─── Battery limit constants (aligned with official Corsair iCUE manifest) ────
 BATT_LEVEL = {
-    "HIGH":       70,
-    "MEDIUM":     50,
-    "LOW":        20,
-    "NOTIFY_LOW": 15,  # For system notification.
+    "HIGH":       50,
+    "MEDIUM":     30,
+    "LOW":        15,
+    "NOTIFY_LOW": 15,  # For system notification (CriticalLow in manifest).
 }
 
 # ─── Brightness level limits for LEDs ───────────────────────────────
@@ -778,6 +802,7 @@ class SettingsDialog(QDialog):
 
         self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
         self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
+        self.voice_prompts_cb = QCheckBox(_tr("Enable official voice prompts"))
 
         self.tray_mode_combo = ThemedComboBox()
         self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
@@ -790,6 +815,7 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(self.autostart_cb)
         layout.addWidget(self.minimized_cb)
+        layout.addWidget(self.voice_prompts_cb)
         # Stacked rather than side by side: the Spanish label for the language
         # row is long enough to squeeze the combo box down to nothing.
         for text, combo in ((_tr("Tray icon:"), self.tray_mode_combo),
@@ -822,6 +848,7 @@ class SettingsDialog(QDialog):
     def load_settings(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
+        self.voice_prompts_cb.setChecked(s.value("voice_prompts", True, type=bool))
         mode = s.value("tray_icon_mode", "virtuoso", type=str)
         idx = self.tray_mode_combo.findData(mode)
         if idx >= 0:
@@ -838,6 +865,7 @@ class SettingsDialog(QDialog):
     def save_and_close(self):
         s = QSettings("AlejandroSocas", "VirtuosoControl")
         s.setValue("start_minimized", self.minimized_cb.isChecked())
+        s.setValue("voice_prompts", self.voice_prompts_cb.isChecked())
         s.setValue("language", self.lang_combo.currentData())
         s.setValue("tray_icon_mode", self.tray_mode_combo.currentData())
         
@@ -896,6 +924,7 @@ class VirtuosoGUI(QMainWindow):
         self._load_settings()   # Load preferences (signals blocked)
         self._sync_mic_status()
         self.init_tray()        # Tray with quick actions
+        QApplication.instance().installEventFilter(self)
 
         # Height is locked to the assembled content rather than hardcoded, so
         # the window stays tight whichever language the labels are in.
@@ -938,6 +967,18 @@ class VirtuosoGUI(QMainWindow):
         self.volume_sync_timer.timeout.connect(self._sync_volume_from_os)
         self.volume_sync_timer.start(1000)
 
+        # Equalizer debounced apply timer (150ms)
+        self.eq_apply_timer = QTimer(self)
+        self.eq_apply_timer.setSingleShot(True)
+        self.eq_apply_timer.timeout.connect(self._apply_current_eq)
+
+        # Inactivity & Smart Sleep Manager
+        self.sleep_inactivity_seconds = 0
+        self.is_sleeping = False
+        self.inactivity_timer = QTimer(self)
+        self.inactivity_timer.timeout.connect(self._check_inactivity)
+        self.inactivity_timer.start(5000)
+
         # Connect and apply saved preferences
         self._try_initial_connect()
         self._apply_saved_settings()
@@ -953,6 +994,8 @@ class VirtuosoGUI(QMainWindow):
     def open_settings(self):
         dlg = SettingsDialog(self)
         if dlg.exec():
+            s = QSettings("AlejandroSocas", "VirtuosoControl")
+            self._voice_prompts = s.value("voice_prompts", True, type=bool)
             self._setup_tray_icons()  # applies without a restart
 
     def _refresh_icons(self):
@@ -988,7 +1031,7 @@ class VirtuosoGUI(QMainWindow):
     # Every card indents its controls past a label column of this width. It is
     # measured rather than hardcoded: at a fixed 54px the English labels fit
     # but "Micrófono" and "Silenciado" are cut off mid-word.
-    ROW_LABELS = ("Logo", "Mic", "Profiles", "Status", "Muted", "Level")
+    ROW_LABELS = ("Logo", "Mic", "Profiles", "Status", "Muted", "Level", "Sleep", "Preset:")
 
     def _measure_row_label_width(self):
         fm = self.fontMetrics()
@@ -1023,22 +1066,40 @@ class VirtuosoGUI(QMainWindow):
         # Width is fixed so the cards keep their proportions; the height is
         # locked to the content in __init__ once every card has been built,
         # which keeps the window tight in both languages.
-        self.setFixedWidth(378)
+        self.setFixedWidth(740)
         self._row_label_w = self._measure_row_label_width()
 
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(14, 12, 14, 14)
-        layout.setSpacing(10)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(14, 12, 14, 14)
+        main_layout.setSpacing(10)
 
-        layout.addLayout(self._build_header())
-        layout.addWidget(self._build_battery_card())
-        layout.addWidget(self._build_lighting_card())
-        layout.addWidget(self._build_mic_card())
-        layout.addWidget(self._build_sidetone_card())
-        layout.addWidget(self._build_volume_card())
-        layout.addStretch()
+        main_layout.addLayout(self._build_header())
+
+        # Two-column layout: Left (Battery, Lighting, Mic), Right (Sidetone, Volume, Equalizer)
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(12)
+        columns_layout.setContentsMargins(0, 0, 0, 0)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(10)
+        left_col.addWidget(self._build_battery_card())
+        left_col.addWidget(self._build_lighting_card())
+        left_col.addWidget(self._build_mic_card())
+        left_col.addStretch()
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
+        right_col.addWidget(self._build_sidetone_card())
+        right_col.addWidget(self._build_volume_card())
+        right_col.addWidget(self._build_equalizer_card())
+        right_col.addStretch()
+
+        columns_layout.addLayout(left_col, 1)
+        columns_layout.addLayout(right_col, 1)
+
+        main_layout.addLayout(columns_layout)
 
     def _build_header(self):
         row = QHBoxLayout()
@@ -1096,9 +1157,28 @@ class VirtuosoGUI(QMainWindow):
 
         self.batt_gauge = BatteryGauge()
 
+        # Sleep timer row
+        self.sleep_combo = ThemedComboBox()
+        self.sleep_combo.addItem(_tr("Off"), 0)
+        self.sleep_combo.addItem(f"1 min ({_tr('Debug')})", 1)
+        self.sleep_combo.addItem("5 min", 5)
+        self.sleep_combo.addItem(f"10 min ({_tr('Default')})", 10)
+        self.sleep_combo.addItem("15 min", 15)
+        self.sleep_combo.addItem("30 min", 30)
+        self.sleep_combo.addItem("60 min", 60)
+        self.sleep_combo.addItem("90 min", 90)
+        self.sleep_combo.currentIndexChanged.connect(self._on_sleep_timer_changed)
+
+        sleep_row = QHBoxLayout()
+        sleep_row.setSpacing(10)
+        sleep_row.addWidget(self._row_label(_tr("Sleep")))
+        sleep_row.addWidget(self.sleep_combo, 1)
+
         card.body.setSpacing(7)
         card.body.addLayout(read_row)
         card.body.addWidget(self.batt_gauge)
+        card.body.addSpacing(2)
+        card.body.addLayout(sleep_row)
         return card
 
     def _build_lighting_card(self):
@@ -1165,8 +1245,24 @@ class VirtuosoGUI(QMainWindow):
         self.save_profile_btn.setMenu(self.save_menu)
         profile_row.addWidget(self.save_profile_btn)
 
+        # Quick colors row
+        self.quick_lighting_combo = ThemedComboBox()
+        self.quick_lighting_combo.addItem(_tr("Quick Colors"), None)
+        self.quick_lighting_combo.addItem(f"🟡 {_tr('Corsair Yellow')}", "#FFCC00")
+        self.quick_lighting_combo.addItem(f"⚪ {_tr('Pure White')}", "#FFFFFF")
+        self.quick_lighting_combo.addItem(f"❄️ {_tr('Ice Blue')}", "#98F8FB")
+        self.quick_lighting_combo.addItem(f"🔴 {_tr('Red Alert')}", "#FF0000")
+        self.quick_lighting_combo.addItem(f"⚫ {_tr('Stealth (Off)')}", "#000000")
+        self.quick_lighting_combo.currentIndexChanged.connect(self._on_quick_lighting_selected)
+
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(10)
+        quick_row.addWidget(self._row_label(_tr("Presets")))
+        quick_row.addWidget(self.quick_lighting_combo, 1)
+
         card.body.addLayout(logo_row)
         card.body.addLayout(mic_row)
+        card.body.addLayout(quick_row)
         card.body.addLayout(profile_row)
         return card
 
@@ -1264,6 +1360,86 @@ class VirtuosoGUI(QMainWindow):
         row.addWidget(self.vol_slider, 1)
         row.addWidget(self.vol_label)
         card.body.addLayout(row)
+        return card
+
+    def _build_equalizer_card(self):
+        card = Card(_tr("Equalizer"))
+
+        self.eq_enable_cb = QCheckBox(_tr("Enable Equalizer"))
+        self.eq_enable_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.eq_enable_cb.toggled.connect(self._on_eq_enabled_toggled)
+        card.add_header_widget(self.eq_enable_cb)
+
+        self.eq_export_btn = QPushButton("⤓")
+        self.eq_export_btn.setObjectName("IconBtn")
+        self.eq_export_btn.setToolTip(_tr("Export EasyEffects"))
+        self.eq_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.eq_export_btn.setFixedSize(22, 22)
+        self.eq_export_btn.clicked.connect(self._export_easyeffects)
+        card.add_header_widget(self.eq_export_btn)
+
+        self.eq_toggle_btn = QPushButton("▾")
+        self.eq_toggle_btn.setObjectName("IconBtn")
+        self.eq_toggle_btn.setFixedSize(22, 22)
+        self.eq_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.eq_toggle_btn.clicked.connect(self._toggle_eq_expanded)
+        card.add_header_widget(self.eq_toggle_btn)
+
+        # Preset selection row
+        self.eq_preset_combo = ThemedComboBox()
+        for name in EQ_PRESETS.keys():
+            self.eq_preset_combo.addItem(_tr(name), name)
+        self.eq_preset_combo.addItem(_tr("Custom"), "Custom")
+        self.eq_preset_combo.currentIndexChanged.connect(self._on_eq_preset_changed)
+
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(10)
+        preset_row.addWidget(self._row_label(_tr("Preset:")))
+        preset_row.addWidget(self.eq_preset_combo, 1)
+
+        # Sliders container
+        self.eq_sliders_container = QWidget()
+        sliders_layout = QHBoxLayout(self.eq_sliders_container)
+        sliders_layout.setContentsMargins(0, 4, 0, 4)
+        sliders_layout.setSpacing(4)
+
+        self.eq_sliders = []
+        self.eq_labels = []
+
+        freq_short = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
+        for i, (freq, short_lbl) in enumerate(zip(EQ_FREQUENCIES, freq_short)):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            f_lbl = QLabel(short_lbl)
+            f_lbl.setObjectName("Muted")
+            f_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            f_lbl.setStyleSheet("font-size: 10px;")
+
+            slider = QSlider(Qt.Orientation.Vertical)
+            slider.setRange(-120, 120)
+            slider.setValue(0)
+            slider.setFixedHeight(75)
+            slider.setCursor(Qt.CursorShape.PointingHandCursor)
+            slider.valueChanged.connect(lambda val, idx=i: self._on_eq_slider_moved(idx, val))
+
+            val_lbl = QLabel("0.0")
+            val_lbl.setObjectName("Muted")
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val_lbl.setStyleSheet("font-size: 9px;")
+
+            col.addWidget(f_lbl)
+            col.addWidget(slider, 0, Qt.AlignmentFlag.AlignCenter)
+            col.addWidget(val_lbl)
+
+            sliders_layout.addLayout(col)
+            self.eq_sliders.append(slider)
+            self.eq_labels.append(val_lbl)
+
+        card.body.setSpacing(6)
+        card.body.addLayout(preset_row)
+        card.body.addWidget(self.eq_sliders_container)
         return card
 
     # ─── Tray with quick actions ───────────────────────────────────
@@ -1452,10 +1628,9 @@ class VirtuosoGUI(QMainWindow):
         # Bloquear señales durante la carga
         for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
-                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
+                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider,
+                  self.eq_enable_cb):
             w.blockSignals(True)
-
-        
 
         self.side_toggle.setChecked(s.value("sidetone_muted", False, type=bool))
         self.side_slider.setValue(s.value("sidetone_level", 70, type=int))
@@ -1493,10 +1668,62 @@ class VirtuosoGUI(QMainWindow):
         else:
             self.side_toggle.setText(_tr("Disable Sidetone"))
 
+        # Voice prompts
+        s_user = QSettings("AlejandroSocas", "VirtuosoControl")
+        self._voice_prompts = s_user.value("voice_prompts", True, type=bool)
+
+        # Sleep timer
+        sleep_mins = s.value("sleep_timer", 10, type=int)
+        s_idx = self.sleep_combo.findData(sleep_mins)
+        if s_idx >= 0:
+            self.sleep_combo.blockSignals(True)
+            self.sleep_combo.setCurrentIndex(s_idx)
+            self.sleep_combo.blockSignals(False)
+
+        # Equalizer preset
+        eq_preset = s.value("eq_preset", "Pure Direct", type=str)
+        eq_idx = self.eq_preset_combo.findData(eq_preset)
+        if eq_idx >= 0:
+            self.eq_preset_combo.blockSignals(True)
+            self.eq_preset_combo.setCurrentIndex(eq_idx)
+            self.eq_preset_combo.blockSignals(False)
+
+        if eq_preset in EQ_PRESETS:
+            gains = EQ_PRESETS[eq_preset]
+            for i, gain in enumerate(gains):
+                slider = self.eq_sliders[i]
+                slider.blockSignals(True)
+                slider.setValue(int(gain * 10))
+                slider.blockSignals(False)
+                sign = "+" if gain > 0 else ""
+                self.eq_labels[i].setText(f"{sign}{gain:.1f}")
+        elif eq_preset == "Custom":
+            custom_gains = s.value("eq_custom_gains", [0.0]*10)
+            if isinstance(custom_gains, list) and len(custom_gains) == 10:
+                for i, g in enumerate(custom_gains):
+                    try:
+                        g_flt = float(g)
+                        self.eq_sliders[i].blockSignals(True)
+                        self.eq_sliders[i].setValue(int(g_flt * 10))
+                        self.eq_sliders[i].blockSignals(False)
+                        sign = "+" if g_flt > 0 else ""
+                        self.eq_labels[i].setText(f"{sign}{g_flt:.1f}")
+                    except (ValueError, TypeError):
+                        pass
+
+        eq_expanded = s.value("eq_expanded", True, type=bool)
+        self.eq_sliders_container.setVisible(eq_expanded)
+        self.eq_toggle_btn.setText("▾" if eq_expanded else "▸")
+
+        # Equalizer enabled
+        eq_enabled = s.value("eq_enabled", False, type=bool)
+        self.eq_enable_cb.setChecked(eq_enabled)
+
         # Desbloquear señales
         for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
-                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider):
+                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider,
+                  self.eq_enable_cb):
             w.blockSignals(False)
 
     def _save_settings(self):
@@ -1514,6 +1741,10 @@ class VirtuosoGUI(QMainWindow):
         s.setValue("volume", self.vol_slider.value())
         s.setValue("rgb_color", self._current_color.name())
         s.setValue("rgb_brightness", self.rgb_slider.value())
+        s.setValue("sleep_timer", self.sleep_combo.currentData())
+        s.setValue("eq_preset", self.eq_preset_combo.currentData())
+        s.setValue("eq_expanded", self.eq_sliders_container.isVisible())
+        s.setValue("eq_enabled", self.eq_enable_cb.isChecked())
 
     def _reapply_all_settings(self):
         """Re-applies all saved settings to the hardware.
@@ -1539,15 +1770,24 @@ class VirtuosoGUI(QMainWindow):
         self.keep_alive_timer.start(20_000)
         self._sync_mic_from_pw()  # before RGB, so the LED starts correct
         self._sync_volume_from_os()  # sync volume from OS on start
-        self._reapply_all_settings()
+        if self._hid_connected:
+            self._reapply_all_settings()
+        if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+            gains = [s.value() / 10.0 for s in self.eq_sliders]
+            self.ctrl.enable_eq(True, gains)
 
     # ─── Conexión HID ────────────────────────────────────────────────
 
     def _try_initial_connect(self):
-        """Conecta al HID sin handshake. El handshake se hace lazy."""
+        """Conecta al HID y comprueba si los auriculares están activos."""
         if self.ctrl.connect():
-            self._hid_connected = True
-            self._update_status(True)
+            if self.ctrl.is_headset_alive():
+                self._hid_connected = True
+                self._update_status(True)
+            else:
+                self._hid_connected = False
+                self._update_status(False)
+                self.reconnect_timer.start(3000)
         else:
             self._hid_connected = False
             self._update_status(False)
@@ -1564,13 +1804,17 @@ class VirtuosoGUI(QMainWindow):
         for w in (self.batt_btn, self.mic_color_btn, self.mic_slider,
                   self.rgb_color_btn, self.rgb_slider, self.mic_mute_color_btn,
                   self.profile_btn_1, self.profile_btn_2, self.profile_btn_3,
-                  self.save_profile_btn):
-            w.setEnabled(enabled)
+                  self.save_profile_btn, self.sleep_combo, self.quick_lighting_combo):
+            try:
+                w.setEnabled(enabled)
+            except Exception:
+                pass
 
     def _update_status(self, connected):
         if connected:
+            dev_name = self.ctrl.get_device_name()
             self._set_status(
-                f"{_tr('Connected')} · {_tr(self.ctrl.connection_mode)}", "ok")
+                f"{dev_name} · {_tr(self.ctrl.connection_mode)}", "ok")
 
             # Disable V2W controls if on wired mode
             is_wired = "Wired" in self.ctrl.connection_mode
@@ -1585,6 +1829,192 @@ class VirtuosoGUI(QMainWindow):
             self._set_v2w_controls_enabled(False)
             self._update_battery_display(_tr("Not connected"))
 
+    # ─── Sleep Timer & Quick Colors Handlers ─────────────────────────
+
+    def _on_sleep_timer_changed(self, index):
+        mins = self.sleep_combo.currentData()
+        if mins is not None:
+            self.ctrl.set_sleep_timer(mins)
+            s = QSettings("VirtuosoControl", "VirtuosoControl")
+            s.setValue("sleep_timer", mins)
+            self.sleep_inactivity_seconds = 0
+            if mins == 0 and self.is_sleeping:
+                self._wake_up_headset()
+
+    def _check_inactivity(self):
+        if not self._hid_connected or "Wired" in self.ctrl.connection_mode:
+            return
+
+        mins = self.sleep_combo.currentData()
+        if mins is None or mins <= 0:
+            self.sleep_inactivity_seconds = 0
+            if self.is_sleeping:
+                self._wake_up_headset()
+            return
+
+        timeout_sec = mins * 60
+        audio_active = self.ctrl.is_audio_active()
+        screen_locked = self.ctrl.is_screen_locked()
+
+        if audio_active:
+            self.sleep_inactivity_seconds = 0
+            if self.is_sleeping:
+                self._wake_up_headset()
+            self._was_screen_locked = screen_locked
+            return
+
+        # No audio currently playing to the headset
+        self.sleep_inactivity_seconds += 5
+
+        if not self.is_sleeping and self.sleep_inactivity_seconds >= timeout_sec:
+            self._put_headset_to_sleep()
+        elif self.is_sleeping:
+            # Wake triggers (NEVER call is_headset_alive() here as that sends RF packets):
+            # 1. Screen unlocked (transition from locked to unlocked)
+            # 2. Passive event pushed by headset (physical button press or power toggle)
+            unlocked_transition = getattr(self, "_was_screen_locked", False) and not screen_locked
+            passive_event = self.ctrl.check_passive_wakeup()
+            if unlocked_transition or passive_event:
+                self._wake_up_headset()
+
+        self._was_screen_locked = screen_locked
+
+    def _put_headset_to_sleep(self):
+        if self.is_sleeping:
+            return
+        self.is_sleeping = True
+        self.keep_alive_timer.stop()
+        self.battery_timer.stop()
+        self.ctrl.enter_standby_sleep()
+        dev_name = self.ctrl.get_device_name()
+        self._set_status(f"{dev_name} · {_tr('Standby (Sleeping)')}", "text_muted")
+        if hasattr(self, "tray_icon") and self.tray_icon:
+            self.tray_icon.setToolTip(f"Virtuoso Control - {_tr('Standby (Sleeping)')}")
+
+    def _wake_up_headset(self):
+        if not self.is_sleeping:
+            return
+        self.is_sleeping = False
+        self.sleep_inactivity_seconds = 0
+        self.ctrl.wake_from_standby_sleep()
+        mins = self.sleep_combo.currentData()
+        if mins is not None:
+            self.ctrl.set_sleep_timer(mins)
+        self.keep_alive_timer.start(20_000)
+        self.battery_timer.start(300_000)
+        self._reapply_all_settings()
+        self._update_status(True)
+        if hasattr(self, "tray_icon") and self.tray_icon:
+            self.tray_icon.setToolTip("Virtuoso Control - Conectado")
+
+    def eventFilter(self, watched, event):
+        if getattr(self, "is_sleeping", False):
+            if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+                self._wake_up_headset()
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event):
+        if getattr(self, "is_sleeping", False):
+            self._wake_up_headset()
+        super().mousePressEvent(event)
+
+    def _on_quick_lighting_selected(self, index):
+        color_hex = self.quick_lighting_combo.currentData()
+        if not color_hex:
+            return
+        col = QColor(color_hex)
+        self._current_color = col
+        self.rgb_color_btn.set_color(col)
+        self.apply_rgb()
+        self._save_settings()
+        self.quick_lighting_combo.blockSignals(True)
+        self.quick_lighting_combo.setCurrentIndex(0)
+        self.quick_lighting_combo.blockSignals(False)
+
+    # ─── Equalizer Handlers ──────────────────────────────────────────
+
+    def _on_eq_enabled_toggled(self, checked):
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        s.setValue("eq_enabled", checked)
+        gains = [s.value() / 10.0 for s in self.eq_sliders]
+        self.ctrl.enable_eq(checked, gains)
+
+    def _apply_current_eq(self):
+        gains = [s.value() / 10.0 for s in self.eq_sliders]
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        s.setValue("eq_preset", "Custom")
+        s.setValue("eq_custom_gains", gains)
+        if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+            self.ctrl.set_eq_gains(gains)
+
+    def _on_eq_preset_changed(self, index):
+        preset_name = self.eq_preset_combo.currentData()
+        if not preset_name or preset_name == "Custom":
+            return
+
+        if preset_name in EQ_PRESETS:
+            gains = EQ_PRESETS[preset_name]
+            for i, gain in enumerate(gains):
+                slider = self.eq_sliders[i]
+                slider.blockSignals(True)
+                slider.setValue(int(round(gain * 10)))
+                slider.blockSignals(False)
+                sign = "+" if gain > 0 else ""
+                self.eq_labels[i].setText(f"{sign}{gain:.1f}")
+
+            # Play official sound cue
+            if getattr(self, "_voice_prompts", True):
+                try:
+                    preset_idx = list(EQ_PRESETS.keys()).index(preset_name) + 1
+                    self.ctrl.play_sound(f"EqualizerPresetChanged{preset_idx}")
+                except Exception:
+                    pass
+
+            s = QSettings("VirtuosoControl", "VirtuosoControl")
+            s.setValue("eq_preset", preset_name)
+            if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+                self.ctrl.set_eq_gains(gains)
+
+    def _on_eq_slider_moved(self, idx, val):
+        db = val / 10.0
+        sign = "+" if db > 0 else ""
+        self.eq_labels[idx].setText(f"{sign}{db:.1f}")
+
+        # Set combo to "Custom" without retriggering preset handler
+        self.eq_preset_combo.blockSignals(True)
+        custom_idx = self.eq_preset_combo.findData("Custom")
+        if custom_idx >= 0:
+            self.eq_preset_combo.setCurrentIndex(custom_idx)
+        self.eq_preset_combo.blockSignals(False)
+
+        # Trigger debounced apply (150ms)
+        self.eq_apply_timer.start(150)
+
+    def _toggle_eq_expanded(self):
+        is_visible = self.eq_sliders_container.isVisible()
+        self.eq_sliders_container.setVisible(not is_visible)
+        self.eq_toggle_btn.setText("▸" if is_visible else "▾")
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        s.setValue("eq_expanded", not is_visible)
+        self.adjustSize()
+        self.setFixedHeight(self.sizeHint().height())
+
+    def _export_easyeffects(self):
+        preset_name = self.eq_preset_combo.currentData() or "Pure Direct"
+        if preset_name == "Custom":
+            gains = [s.value() / 10.0 for s in self.eq_sliders]
+            EQ_PRESETS["Custom"] = gains
+
+        path = self.ctrl.export_easyeffects_preset(preset_name)
+        if path:
+            QMessageBox.information(
+                self,
+                _tr("Export EasyEffects"),
+                f"{_tr('Exported EasyEffects preset to:')}\n{path}"
+            )
+        else:
+            QMessageBox.warning(self, _tr("Error"), "Failed to export preset.")
+
     def _on_connection_lost(self):
         self._hid_connected = False
         self._update_status(False)
@@ -1594,11 +2024,15 @@ class VirtuosoGUI(QMainWindow):
 
     def force_reconnect(self):
         self._set_status(_tr("Connecting..."), "warn")
-        # Use singleShot to allow UI to paint before blocking
+        self.ctrl.reconnect()
         QTimer.singleShot(50, self.try_reconnect)
 
     def try_reconnect(self):
-        if self.ctrl.reconnect() and self.ctrl.is_headset_alive():
+        if not self.ctrl.is_connected:
+            if not self.ctrl.connect():
+                return
+
+        if self.ctrl.is_headset_alive():
             self._hid_connected = True
             self._update_status(True)
             self.reconnect_timer.stop()
@@ -1611,7 +2045,7 @@ class VirtuosoGUI(QMainWindow):
 
 
     def do_keep_alive(self):
-        if not self._hid_connected:
+        if not self._hid_connected or getattr(self, "is_sleeping", False):
             return
 
         # In wired mode, V2W heartbeat and queries are unsupported
@@ -1824,6 +2258,8 @@ class VirtuosoGUI(QMainWindow):
         presses = self.ctrl.poll_mic_button()
         if presses % 2 == 0:
             return  # no presses, or an even number that cancels out
+        if getattr(self, "is_sleeping", False):
+            self._wake_up_headset()
         self._apply_mic_mute(not self._mic_muted)
 
     def _apply_mic_mute(self, muted):
@@ -1835,7 +2271,10 @@ class VirtuosoGUI(QMainWindow):
         # The firmware beeps on a mute change in hardware mode; in software
         # mode it stays silent, so supply the cue ourselves.
         if self.mic_tone_cb.isChecked():
-            self.ctrl.play_mic_tone(muted)
+            if getattr(self, "_voice_prompts", True):
+                self.ctrl.play_sound("MicOff" if muted else "MicOn")
+            else:
+                self.ctrl.play_mic_tone(muted)
 
     def _sync_mic_status(self):
         """Updates the read-only mic indicator in the window and the tray."""
@@ -1874,9 +2313,13 @@ class VirtuosoGUI(QMainWindow):
             else:
                 self._apply_sidetone("off")
             self.side_toggle.setText(_tr("Enable Sidetone"))
+            if getattr(self, "_voice_prompts", True):
+                self.ctrl.play_sound("SidetoneOff")
         else:
             self._apply_sidetone(self.side_slider.value())
             self.side_toggle.setText(_tr("Disable Sidetone"))
+            if getattr(self, "_voice_prompts", True):
+                self.ctrl.play_sound("SidetoneOn")
 
         self._sync_tray_sidetone()
         self._save_settings()
@@ -1896,7 +2339,7 @@ class VirtuosoGUI(QMainWindow):
 
     def _sync_volume_from_os(self):
         """Synchronizes the volume slider if changed outside the app (OS / headset wheel)."""
-        if self.vol_slider.isSliderDown():
+        if self.vol_slider.isSliderDown() or getattr(self, "is_sleeping", False):
             return
         vol = self.ctrl.get_volume()
         if vol is not None and vol != self.vol_slider.value():
@@ -1910,8 +2353,9 @@ class VirtuosoGUI(QMainWindow):
 
     def check_battery(self):
         """Queries battery and updates UI + tray."""
-        if not self._hid_connected:
-            self._update_battery_display(_tr("Not connected"))
+        if not self._hid_connected or getattr(self, "is_sleeping", False):
+            if not self._hid_connected:
+                self._update_battery_display(_tr("Not connected"))
             return
         battery_str = self.ctrl.get_battery()
         # Translate the status part of the battery string
@@ -1929,7 +2373,7 @@ class VirtuosoGUI(QMainWindow):
         Skipped in wired mode, where _update_status() has already put
         "N/A (Wired)" in the label and the V2W battery query is unsupported.
         """
-        if not self._hid_connected:
+        if not self._hid_connected or getattr(self, "is_sleeping", False):
             return
         if "Wired" in self.ctrl.connection_mode:
             return
@@ -1938,7 +2382,7 @@ class VirtuosoGUI(QMainWindow):
     def _auto_battery_check(self):
         """Periodic auto-check. Only if handshake is done
         (to avoid triggering handshake and turning off the LED accidentally)."""
-        if self._hid_connected and self.ctrl._handshake_done:
+        if self._hid_connected and self.ctrl._handshake_done and not getattr(self, "is_sleeping", False):
             # Smart Battery Polling: 
             # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
             if self._last_battery_percent is not None and self._last_battery_percent < BATT_LEVEL["NOTIFY_LOW"]:
@@ -2036,8 +2480,10 @@ class VirtuosoGUI(QMainWindow):
         except (ValueError, IndexError):
             return
 
-        # --- Alert 1: Low Battery (< 20%) ---
+        # --- Alert 1: Low Battery (< 30%) ---
         if not self._last_charging and BATT_LEVEL["NOTIFY_LOW"] <= percent < BATT_LEVEL["LOW"] and not self._low_battery_notified_0:
+            if getattr(self, "_voice_prompts", True):
+                self.ctrl.play_sound("BatteryLow")
             self.tray_icon.showMessage(
                 _tr("⚠️ Low Battery — Virtuoso SE"),
                 _tr("The headset is at {}% battery.").format(percent),
@@ -2055,6 +2501,8 @@ class VirtuosoGUI(QMainWindow):
 
         # --- Alert 2: Very Low Battery (< 15%) ---
         if not self._last_charging and percent < BATT_LEVEL["NOTIFY_LOW"] and not self._low_battery_notified:
+            if getattr(self, "_voice_prompts", True):
+                self.ctrl.play_sound("BatteryCritical")
             self.tray_icon.showMessage(
                 _tr("⚠️ Very Low Battery — Virtuoso SE"),
                 _tr("The headset is at {}% battery. Power saving mode enabled.").format(percent),
@@ -2097,6 +2545,14 @@ class VirtuosoGUI(QMainWindow):
             self.volume_sync_timer.stop()
         if hasattr(self, "blink_timer"):
             self.blink_timer.stop()
+        if hasattr(self, "inactivity_timer"):
+            self.inactivity_timer.stop()
+        if hasattr(self, "eq_apply_timer"):
+            self.eq_apply_timer.stop()
+
+        # Restore direct hardware sink if EQ was running
+        if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+            self.ctrl.enable_eq(False)
 
         # Sidetone is a mixer setting: it survives the app. Turn it off on the
         # way out so it cannot be left on with no UI around to switch it off.

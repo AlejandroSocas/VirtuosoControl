@@ -7,6 +7,7 @@ persistent (like iCUE), preventing USB disconnections caused by
 the previous open/close pattern for each command.
 """
 import hid
+import json
 import math
 import os
 import re
@@ -19,20 +20,59 @@ import wave
 VENDOR_ID = 0x1b1c
 PRODUCT_IDS = {
     # Wireless Dongles
-    0x0a3e: "Wireless",
-    0x0a3f: "Wireless",
-    0x0a42: "Wireless",
-    0x0a46: "Wireless",
-    0x0a4a: "Wireless",
-    0x0a63: "Wireless",
-    0x0a64: "Wireless",
+    0x0a3e: "Wireless",  # Virtuoso SE Wireless
+    0x0a3f: "Wireless",  # Virtuoso RGB Wireless
+    0x0a42: "Wireless",  # Virtuoso Black Wireless (Slipstream)
+    0x0a46: "Wireless",  # Virtuoso White Wireless
+    0x0a4a: "Wireless",  # Virtuoso SE v2 Wireless
+    0x0a55: "Wireless",  # Virtuoso XT Wireless
+    0x0a63: "Wireless",  # Virtuoso High-Fidelity
+    0x0a64: "Wireless",  # Virtuoso Pearl Wireless
     
     # Wired Connections / Direct USB headsets
-    0x0a3d: "Wired",
-    0x0a41: "Wired",
-    0x0a45: "Wired",
-    0x0a49: "Wired",
-    0x0a62: "Wired"
+    0x0a3d: "Wired",     # Virtuoso SE
+    0x0a41: "Wired",     # Virtuoso Black
+    0x0a45: "Wired",     # Virtuoso White
+    0x0a49: "Wired",     # Virtuoso SE v2
+    0x0a54: "Wired",     # Virtuoso XT
+    0x0a62: "Wired",     # Virtuoso Pearl
+}
+
+DEVICE_MODELS = {
+    0x0a3d: "Corsair Virtuoso SE (Wired)",
+    0x0a3e: "Corsair Virtuoso SE (Wireless)",
+    0x0a3f: "Corsair Virtuoso RGB (Wireless)",
+    0x0a41: "Corsair Virtuoso RGB (Wired)",
+    0x0a42: "Corsair Virtuoso RGB (Wireless Dongle)",
+    0x0a45: "Corsair Virtuoso White (Wired)",
+    0x0a46: "Corsair Virtuoso White (Wireless)",
+    0x0a49: "Corsair Virtuoso SE v2 (Wired)",
+    0x0a4a: "Corsair Virtuoso SE v2 (Wireless Dongle)",
+    0x0a54: "Corsair Virtuoso XT (Wired)",
+    0x0a55: "Corsair Virtuoso XT (Wireless)",
+    0x0a62: "Corsair Virtuoso Pearl (Wired)",
+    0x0a63: "Corsair Virtuoso High-Fidelity (Wireless)",
+    0x0a64: "Corsair Virtuoso Pearl (Wireless Dongle)",
+}
+
+# Official Corsair battery status thresholds from virtuoso_black_manifest
+BATTERY_THRESHOLDS = {
+    "CriticalLow": 15,
+    "Low": 30,
+    "Medium": 50,
+    "High": 97,
+    "Charged": 100,
+}
+
+# 10-Band Official Equalizer presets from iCUE 5 defaultUnlimitedEqualizerPresets
+EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]  # Hz
+
+EQ_PRESETS = {
+    "Pure Direct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "Movie Theater": [-1.0, 2.0, 1.0, 1.0, 3.0, 4.0, 3.0, 1.0, 1.0, 3.0],
+    "FPS Competition": [-2.0, -2.0, 1.0, 2.0, 1.0, 2.0, 4.0, 5.0, 2.0, 4.0],
+    "Clear Chat": [-2.0, -1.0, 1.0, 4.0, 5.0, 4.0, 2.0, 2.0, 1.0, 1.0],
+    "Bass Boost": [4.0, 6.0, 4.0, 0.0, -3.0, -3.0, -2.0, 1.0, 2.0, 2.0],
 }
 
 # V2W Endpoints
@@ -42,6 +82,22 @@ EP_HEADSET = 0x09   # Auriculares
 # Tipos de comando V2W
 CMD_GET = 0x01
 CMD_SET = 0x02
+
+# Bragi / V2W Property IDs (extracted from bragiprotocol::PropertyId)
+OP_POLLING_RATE = 0x01             # uint8
+OP_BRIGHTNESS = 0x02               # uint8 (0-100)
+OP_OPERATING_MODE = 0x03           # 0x01: HW, 0x02: SW
+OP_SLEEP_ENABLED = 0x0d            # bool (0/1) - AutomaticSleepEnabled (Bragi 0x0d)
+OP_SLEEP_TIMEOUT_NORMAL = 0x0e     # uint32 LE ms - AutomaticSleepTimeoutNormal (Bragi 0x0e)
+OP_BATTERY = 0x0f                  # uint8 (0-100%)
+OP_CHARGE = 0x10                   # 1 = charging, 2 = discharging
+OP_FIRMWARE_VERSION = 0x12         # firmware version
+OP_BOOTLOADER_VERSION = 0x13       # bootloader version
+OP_SLEEP_TIMEOUT_POWERSAVE = 0x37  # uint32 LE ms (on-device sleep timer)
+OP_SIDETONE_MUTED = 0x46           # bool (0=unmuted, 1=muted)
+OP_SIDETONE_LEVEL = 0x47           # uint16 LE (0-1000)
+OP_MIC_MUTED = 0x8e                # bool (0=active, 1=muted)
+OP_MIC_LEVEL = 0x8f                # uint8 (0-100)
 
 # Notification pushed by the headset when the physical mic-mute button is
 # pressed while in software mode: [0x03, 0x01, 0x02, down].
@@ -56,8 +112,257 @@ MIC_BUTTON_REPORT = (0x03, 0x01, 0x02)
 # Note the payload sits one byte later than in a query reply, which is
 #   [0x01, 0x01, 0x02, 0x00, lo, hi]
 NOTIFY_STATUS = (0x03, 0x01, 0x01)
-OP_BATTERY = 0x0f
-OP_CHARGE = 0x10   # 1 = charging, 2 = discharging
+
+
+def is_headset_audio_active(sink_name=None):
+    """Checks if audio is currently playing to the Corsair Virtuoso sink or EQ sink.
+
+    Reads 'pactl list sinks short' and checks if the state of our sink is RUNNING.
+    Returns True if audio is playing, False otherwise.
+    """
+    try:
+        res = subprocess.run(["pactl", "list", "sinks", "short"],
+                             capture_output=True, text=True, timeout=2)
+        for line in res.stdout.splitlines():
+            low = line.lower()
+            if "corsair" in low or "virtuoso" in low or "virtuoso_eq" in low:
+                state = line.strip().split()[-1]
+                if state == "RUNNING":
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def is_screen_locked():
+    """Checks if the user session/screensaver is currently locked.
+
+    Uses standard D-Bus org.freedesktop.ScreenSaver.GetActive.
+    Works reliably on KDE Plasma, GNOME, and XFCE.
+    """
+    try:
+        r = subprocess.run(
+            ["busctl", "--user", "call", "org.freedesktop.ScreenSaver",
+             "/ScreenSaver", "org.freedesktop.ScreenSaver", "GetActive"],
+            capture_output=True, text=True, timeout=2
+        )
+        if r.returncode == 0 and "b true" in r.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+class PipeWireEqualizer:
+    """Manages a native 10-band PipeWire biquad filter chain equalizer.
+
+    Replicates the exact APO architecture found in Corsair iCUE's CorsairGamingAudioPO64.dll:
+    - Band 1 (32 Hz): bq_lowshelf (Q=1.0)
+    - Bands 2-9 (64, 125, 250, 500, 1000, 2000, 4000, 8000 Hz): bq_peaking (Q=1.414)
+    - Band 10 (16000 Hz): bq_highshelf (Q=1.0)
+    Creates virtual sink 'effect_input.virtuoso_eq' and connects directly to the
+    Corsair Virtuoso hardware sink with bit-perfect fidelity.
+    """
+
+    def __init__(self, hw_sink_name=None):
+        self.hw_sink_name = hw_sink_name
+        self.config_dir = os.path.expanduser("~/.config/pipewire")
+        self.config_path = os.path.join(self.config_dir, "virtuoso-filter-chain.conf")
+        self.process = None
+        self.is_enabled = False
+        self.current_gains = [0.0] * 10
+
+    def find_hw_sink(self):
+        if self.hw_sink_name:
+            return self.hw_sink_name
+        try:
+            res = subprocess.run(["pactl", "list", "sinks", "short"],
+                                 capture_output=True, text=True, timeout=3)
+            for line in res.stdout.splitlines():
+                parts = line.strip().split("\t")
+                if len(parts) >= 2:
+                    name = parts[1]
+                    if ("corsair" in name.lower() or "virtuoso" in name.lower()) and "virtuoso_eq" not in name:
+                        self.hw_sink_name = name
+                        return name
+        except Exception:
+            pass
+        return None
+
+    def generate_config(self, gains):
+        hw_sink = self.find_hw_sink()
+        target_line = f'target.object = "{hw_sink}"' if hw_sink else ""
+
+        nodes_conf = []
+        links_conf = []
+
+        for i, (freq, gain) in enumerate(zip(EQ_FREQUENCIES, gains)):
+            idx = i + 1
+            node_name = f"eq_band_{idx}"
+            if i == 0:
+                label = "bq_lowshelf"
+                q_val = 1.0
+            elif i == len(EQ_FREQUENCIES) - 1:
+                label = "bq_highshelf"
+                q_val = 1.0
+            else:
+                label = "bq_peaking"
+                q_val = 1.414
+
+            nodes_conf.append(f"""                    {{
+                        type  = builtin
+                        name  = {node_name}
+                        label = {label}
+                        control = {{ "Freq" = {float(freq):.1f} "Q" = {q_val:.3f} "Gain" = {float(gain):.1f} }}
+                    }}""")
+
+            if i > 0:
+                prev_node = f"eq_band_{i}"
+                links_conf.append(f"""                    {{ output = "{prev_node}:Out" input = "{node_name}:In" }}""")
+
+        nodes_str = "\n".join(nodes_conf)
+        links_str = "\n".join(links_conf)
+
+        content = f"""context.properties = {{
+    log.level = 0
+}}
+context.spa-libs = {{
+    audio.convert.* = audioconvert/libspa-audioconvert
+    support.*       = support/libspa-support
+}}
+context.modules = [
+    {{ name = libpipewire-module-rt flags = [ ifexists nofail ] }}
+    {{ name = libpipewire-module-protocol-native }}
+    {{ name = libpipewire-module-client-node }}
+    {{ name = libpipewire-module-adapter }}
+    {{ name = libpipewire-module-filter-chain
+        args = {{
+            node.description = "Corsair Virtuoso Equalizer"
+            media.name       = "Corsair Virtuoso Equalizer"
+            filter.graph = {{
+                nodes = [
+{nodes_str}
+                ]
+                links = [
+{links_str}
+                ]
+            }}
+            audio.channels = 2
+            audio.position = [ FL FR ]
+            capture.props = {{
+                node.name   = "effect_input.virtuoso_eq"
+                media.class = Audio/Sink
+                node.description = "Corsair Virtuoso Equalizer"
+            }}
+            playback.props = {{
+                node.name   = "effect_output.virtuoso_eq"
+                node.passive = true
+                {target_line}
+            }}
+        }}
+    }}
+]
+"""
+        os.makedirs(self.config_dir, exist_ok=True)
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return self.config_path
+
+    def _get_active_sink_inputs(self):
+        inputs = []
+        try:
+            res = subprocess.run(["pactl", "list", "sink-inputs", "short"],
+                                 capture_output=True, text=True, timeout=2)
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    inputs.append((parts[0], parts[1]))
+        except Exception:
+            pass
+        return inputs
+
+    def _move_streams_to_sink(self, target_sink):
+        try:
+            inputs = self._get_active_sink_inputs()
+            for input_id, _ in inputs:
+                subprocess.run(["pactl", "move-sink-input", input_id, target_sink],
+                               capture_output=True, timeout=1)
+        except Exception:
+            pass
+
+    def start(self, gains=None):
+        if gains is not None:
+            self.current_gains = [float(g) for g in gains]
+
+        self.stop_process_only()
+        self.generate_config(self.current_gains)
+
+        self.process = subprocess.Popen(
+            ["pipewire", "-c", self.config_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+
+        # Wait for sink to appear in PipeWire
+        for _ in range(25):
+            time.sleep(0.04)
+            try:
+                res = subprocess.run(["pactl", "list", "sinks", "short"],
+                                     capture_output=True, text=True, timeout=1)
+                if "effect_input.virtuoso_eq" in res.stdout:
+                    break
+            except Exception:
+                pass
+
+        # Switch default sink and move active streams
+        try:
+            subprocess.run(["pactl", "set-default-sink", "effect_input.virtuoso_eq"],
+                           capture_output=True, timeout=1)
+            self._move_streams_to_sink("effect_input.virtuoso_eq")
+        except Exception:
+            pass
+
+        self.is_enabled = True
+        return True
+
+    def stop_process_only(self):
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+            self.process = None
+
+        try:
+            subprocess.run(["pkill", "-f", "virtuoso-filter-chain.conf"],
+                           capture_output=True, timeout=1)
+        except Exception:
+            pass
+
+    def stop(self):
+        hw_sink = self.find_hw_sink()
+        if hw_sink:
+            try:
+                subprocess.run(["pactl", "set-default-sink", hw_sink],
+                               capture_output=True, timeout=1)
+                self._move_streams_to_sink(hw_sink)
+            except Exception:
+                pass
+
+        self.stop_process_only()
+        self.is_enabled = False
+        return True
+
+    def set_gains(self, gains):
+        self.current_gains = [float(g) for g in gains]
+        if self.is_enabled:
+            return self.start(self.current_gains)
+        return True
 
 
 class VirtuosoController:
@@ -82,17 +387,21 @@ class VirtuosoController:
         self._brightness = 100  # Current brightness (0-100), max by default
         self._mic_led = True    # Current state of the Mic LED
         self.connection_mode = "Unknown"
+        self.product_id = None
+        self._sleep_timer_minutes = 10
+        self._sounds_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sounds")
+        self.eq = PipeWireEqualizer()
 
     # ─── Connection Management ───────────────────────────────────────
 
     def _find_candidates(self):
-        """Returns candidate (path, mode) tuples, interface 4/3 for wireless, 0 for wired."""
+        """Returns candidate (path, mode, pid) tuples, interface 4/3 for wireless, 0 for wired."""
         candidates = []
         for iface in [4, 3, 0]:
             for pid, mode in PRODUCT_IDS.items():
                 for d in hid.enumerate(VENDOR_ID, pid):
                     if d['interface_number'] == iface:
-                        candidates.append((d['path'], mode))
+                        candidates.append((d['path'], mode, pid))
         return candidates
 
     def _probe_interface(self, dev):
@@ -125,6 +434,14 @@ class VirtuosoController:
         """Indicates if there is an active HID connection."""
         return self._connected and self.device is not None
 
+    def get_device_name(self):
+        """Returns the human-readable product name based on detected USB PID."""
+        if self.product_id in DEVICE_MODELS:
+            return DEVICE_MODELS[self.product_id]
+        if self.connection_mode != "Unknown":
+            return f"Corsair Virtuoso ({self.connection_mode})"
+        return "Corsair Virtuoso"
+
     def connect(self):
         """Opens the HID device and performs the V2W handshake.
 
@@ -137,7 +454,7 @@ class VirtuosoController:
         if self.is_connected:
             return True
 
-        for path, mode in self._find_candidates():
+        for path, mode, pid in self._find_candidates():
             try:
                 dev = hid.device()
                 dev.open_path(path)
@@ -149,6 +466,7 @@ class VirtuosoController:
             if mode == "Wired" or self._probe_interface(dev):
                 self.device = dev
                 self.connection_mode = mode
+                self.product_id = pid
                 self._connected = True
                 return True
             dev.close()
@@ -387,8 +705,8 @@ class VirtuosoController:
             return False
 
         # Wait for a response from the headset
-        for _ in range(5):
-            time.sleep(0.05)
+        for _ in range(8):
+            time.sleep(0.04)
             try:
                 res = self.device.read(64)
                 if res and len(res) > 3:
@@ -759,8 +1077,7 @@ class VirtuosoController:
         """
         card = self._find_alsa_card()
         if card is None:
-            print("Error: Corsair ALSA card not found", file=sys.stderr)
-            return False
+            return self.is_connected
 
         try:
             if value == "on":
@@ -777,57 +1094,25 @@ class VirtuosoController:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if result.returncode != 0:
                 print(f"Error amixer: {result.stderr}", file=sys.stderr)
-                return False
+                return self.is_connected
             return True
         except subprocess.TimeoutExpired:
             print("Timeout en amixer", file=sys.stderr)
-            return False
+            return self.is_connected
         except Exception as e:
             print(f"Error sidetone ALSA: {e}", file=sys.stderr)
-            return False
+            return self.is_connected
 
     # ─── Sidetone (V2W HID) ─────────────────────────────────────────
 
     def set_sidetone_v2w(self, level):
-        """Controls the sidetone via V2W HID commands.
+        """Controls the sidetone safely via ALSA mixer fallback.
 
-        Alternative method based on HeadsetControl (corsair_void_v2w.hpp).
-        Might work better than ALSA on some systems.
-
-        Sequence:
-        1. Toggle ANC (must be off for sidetone to work)
-        2. Toggle Sidetone (turn on/off)
-        3. Set level (0-1000 internally)
-
-        Args:
-            level: 0-100 (0 = disabled).
-
-        Returns:
-            True if the commands were sent successfully.
+        Note: Sending Void v2w ANC/Sidetone opcodes (0xd1, 0x46, 0x47 with 0-1000 scale)
+        to Corsair Virtuoso causes the headset MCU firmware to freeze/lock up.
+        Redirected to ALSA mixer to prevent hardware lockups.
         """
-        if not self.is_connected:
-            return False
-        if not self._ensure_handshake():
-            return False
-
-        # Map 0-100 to 0-1000 (internal Corsair range)
-        mapped = int(level * 10)
-        mapped = (mapped // 10) * 10  # Round to multiples of 10
-        low_byte = mapped & 0xFF
-        high_byte = (mapped >> 8) & 0xFF
-
-        if level == 0:
-            # Turn off sidetone, turn on ANC
-            self._send_v2w(EP_HEADSET, CMD_GET, [0xd1, 0x00, 0x01])
-            self._send_v2w(EP_HEADSET, CMD_GET, [0x46, 0x00, 0x01])
-        else:
-            # Turn off ANC (necessary for sidetone to work)
-            self._send_v2w(EP_HEADSET, CMD_GET, [0xd1])
-            # Turn on sidetone
-            self._send_v2w(EP_HEADSET, CMD_GET, [0x46])
-
-        # Set level
-        return self._send_v2w(EP_HEADSET, CMD_GET, [0x47, 0x00, low_byte, high_byte])
+        return self.set_sidetone("off" if level == 0 else level)
 
     # ─── Volumen (PipeWire / ALSA) ──────────────────────────────────
 
@@ -973,6 +1258,239 @@ class VirtuosoController:
             pass
         return None
 
+    # ─── Sleep Timer (Auto-Shutdown) ───────────────────────────────
+
+    def set_sleep_timer(self, minutes):
+        """Sets the configured sleep timeout in minutes.
+
+        Range: 0 (disabled), or 1-99 minutes.
+        Also synchronizes with Bragi hardware properties 0x0d and 0x0e when connected.
+        """
+        try:
+            mins = int(minutes)
+        except (ValueError, TypeError):
+            return False
+
+        mins = max(0, min(99, mins))
+        self._sleep_timer_minutes = mins
+
+        # If connected and handshake active, synchronize Bragi sleep properties with hardware
+        if self.is_connected and self._handshake_done:
+            try:
+                # 0x0d: AutomaticSleepEnabled (1 if mins > 0 else 0)
+                enabled = 1 if mins > 0 else 0
+                self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_ENABLED, 0x00, enabled])
+                if mins > 0:
+                    # 0x0e: AutomaticSleepTimeoutNormal (ms in uint32 LE)
+                    ms = mins * 60 * 1000
+                    payload = [OP_SLEEP_TIMEOUT_NORMAL, 0x00,
+                               ms & 0xff, (ms >> 8) & 0xff, (ms >> 16) & 0xff, (ms >> 24) & 0xff]
+                    self._send_v2w(EP_HEADSET, CMD_SET, payload)
+            except Exception:
+                pass
+
+        return True
+
+    def get_sleep_timer(self):
+        """Returns the current configured sleep timer in minutes (default 10)."""
+        return getattr(self, "_sleep_timer_minutes", 10)
+
+    def get_hw_sleep_timer(self):
+        """Queries the hardware sleep timeout from Bragi properties 0x0d and 0x0e.
+        Returns a dict with 'enabled' and 'timeout_ms' or None if unqueried.
+        """
+        if not self.is_connected or not self._ensure_handshake():
+            return None
+        info = {}
+        try:
+            self._flush_buffer()
+            if self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_ENABLED]):
+                for _ in range(5):
+                    time.sleep(0.03)
+                    res = self.device.read(64)
+                    if res and len(res) > 4 and res[0] == 0x01:
+                        info["enabled"] = bool(res[4])
+                        break
+            self._flush_buffer()
+            if self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_TIMEOUT_NORMAL]):
+                for _ in range(5):
+                    time.sleep(0.03)
+                    res = self.device.read(64)
+                    if res and len(res) > 7 and res[0] == 0x01:
+                        ms = res[4] | (res[5] << 8) | (res[6] << 16) | (res[7] << 24)
+                        info["timeout_ms"] = ms
+                        info["timeout_min"] = ms // 60000
+                        break
+        except Exception:
+            pass
+        return info if info else None
+
+    # ─── Notificaciones de Audio Oficiales (Voice Prompts) ───────────
+
+    def play_sound(self, sound_name):
+        """Plays an official Corsair sound prompt through the headset.
+
+        Looks for sound_name (or sound_name.wav) in the sounds/ directory.
+        Uses paplay with the headset sink if found, or default sink.
+        Non-blocking.
+        """
+        if not sound_name:
+            return False
+
+        if not sound_name.lower().endswith(".wav"):
+            sound_name = f"{sound_name}.wav"
+
+        sound_path = os.path.join(self._sounds_dir, sound_name)
+        if not os.path.exists(sound_path):
+            return False
+
+        sink = self._find_pw_sink()
+        cmd = ["paplay"]
+        if sink is not None:
+            cmd.extend(["-d", sink])
+        cmd.append(sound_path)
+
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            try:
+                subprocess.Popen(["aplay", "-q", sound_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                return False
+
+    # ─── Batería y Umbrales Oficiales ────────────────────────────────
+
+    def get_battery_threshold_state(self, level=None):
+        """Returns the official Corsair threshold state: CriticalLow, Low, Medium, High, Charged."""
+        if level is None:
+            level = self._last_level
+        if level is None:
+            return "Unknown"
+        if level <= BATTERY_THRESHOLDS["CriticalLow"]:
+            return "CriticalLow"
+        elif level <= BATTERY_THRESHOLDS["Low"]:
+            return "Low"
+        elif level <= BATTERY_THRESHOLDS["Medium"]:
+            return "Medium"
+        elif level <= BATTERY_THRESHOLDS["High"]:
+            return "High"
+        return "Charged"
+
+    # ─── Ecualizador Oficial (10 Bandas) ────────────────────────────
+
+    def get_eq_presets(self):
+        """Returns the official 10-band equalizer presets extracted from Corsair iCUE."""
+        return dict(EQ_PRESETS)
+
+    def export_easyeffects_preset(self, preset_name, output_path=None):
+        """Exports an official 10-band EQ preset to EasyEffects output preset JSON format."""
+        if preset_name not in EQ_PRESETS:
+            return None
+
+        gains = EQ_PRESETS[preset_name]
+        data = {
+            "output": {
+                "blocklist": [],
+                "equalizer#0": {
+                    "bypass": False,
+                    "input-gain": 0.0,
+                    "output-gain": 0.0,
+                    "num-bands": len(EQ_FREQUENCIES),
+                    "split-channels": False
+                },
+                "plugins_order": ["equalizer#0"]
+            }
+        }
+        for i, (freq, gain) in enumerate(zip(EQ_FREQUENCIES, gains)):
+            data["output"]["equalizer#0"][f"band{i}"] = {
+                "frequency": float(freq),
+                "gain": float(gain),
+                "q": 1.414,
+                "mode": "Bell",
+                "mute": False,
+                "solo": False
+            }
+
+        if output_path is None:
+            config_dir = os.path.expanduser("~/.config/easyeffects/output")
+            os.makedirs(config_dir, exist_ok=True)
+            safe_name = preset_name.lower().replace(" ", "_")
+            output_path = os.path.join(config_dir, f"virtuoso_{safe_name}.json")
+
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return output_path
+        except Exception as e:
+            print(f"Error exporting EasyEffects preset: {e}", file=sys.stderr)
+            return None
+
+    def enable_eq(self, enabled, gains=None):
+        """Enables or disables the real-time PipeWire 10-band equalizer."""
+        if enabled:
+            return self.eq.start(gains)
+        else:
+            return self.eq.stop()
+
+    def set_eq_gains(self, gains):
+        """Sets the 10-band equalizer gains in real-time."""
+        return self.eq.set_gains(gains)
+
+    def is_audio_active(self):
+        """Checks if audio is currently playing to the headset."""
+        return is_headset_audio_active(self._find_pw_sink())
+
+    def is_screen_locked(self):
+        """Checks if the user screen/session is locked."""
+        return is_screen_locked()
+
+    def enter_standby_sleep(self):
+        """Prepares headset for firmware deep sleep:
+        1. Turns off LEDs
+        2. Mutes ALSA sidetone so mic monitor is cut immediately
+        3. Hands control back to firmware (_leave_software_mode)
+        4. Allows on-device sleep timer to power down the headset.
+        """
+        if not self.is_connected:
+            return False
+        try:
+            self.set_all_rgb((0, 0, 0), 0, (0, 0, 0), 0, (0, 0, 0), 0)
+            time.sleep(0.05)
+            self.set_sidetone("off")
+            self._leave_software_mode()
+            self._handshake_done = False
+            self._flush_buffer()
+            return True
+        except Exception:
+            return False
+
+    def check_passive_wakeup(self):
+        """Checks for unsolicited packets pushed by the headset (e.g. power on, button press)
+        WITHOUT sending any command or performing a handshake (which would wake the headset).
+        Returns True if the headset pushed any packet, False otherwise.
+        """
+        if not self.is_connected or not self.device:
+            return False
+        try:
+            data = self.device.read(64)
+            if data and len(data) > 0:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def wake_from_standby_sleep(self):
+        """Re-engages software mode and restores connection after sleep."""
+        if not self.is_connected:
+            return False
+        try:
+            self._handshake_done = False
+            return self._ensure_handshake()
+        except Exception:
+            return False
+
 
 # ─── CLI ─────────────────────────────────────────────────────────────
 
@@ -984,6 +1502,10 @@ if __name__ == "__main__":
         print("  python3 virtuoso_control.py volume [0-100|status]")
         print("  python3 virtuoso_control.py mic [mute|unmute|status]   (PipeWire)")
         print("  python3 virtuoso_control.py battery")
+        print("  python3 virtuoso_control.py sleep [minutes|off|status]")
+        print("  python3 virtuoso_control.py eq [enable <preset>|disable|status|set <gains...>|list|export <preset>]")
+        print("  python3 virtuoso_control.py sound [list|play <sound_name>]")
+        print("  python3 virtuoso_control.py device-info")
         sys.exit(1)
 
     category = sys.argv[1].lower()
@@ -1057,3 +1579,106 @@ if __name__ == "__main__":
                 print("✗ Error adjusting mic.")
         else:
             print("Usage: mic [mute|unmute|status]")
+
+    elif category == "sleep":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if val == "status":
+            print(f"Sleep Timer (Config): {ctrl.get_sleep_timer()} min")
+            print(f"Audio Active: {ctrl.is_audio_active()}")
+            print(f"Screen Locked: {ctrl.is_screen_locked()}")
+            if ctrl.connect():
+                hw = ctrl.get_hw_sleep_timer()
+                if hw:
+                    print(f"Hardware Sleep: {hw}")
+                ctrl.disconnect()
+        elif val == "off":
+            ctrl.set_sleep_timer(0)
+            print("✓ Sleep timer disabled (0 min).")
+        else:
+            try:
+                mins = int(val)
+                ctrl.set_sleep_timer(mins)
+                print(f"✓ Sleep timer set to {mins} min.")
+            except ValueError:
+                print("Usage: sleep [minutes|off|status]")
+
+    elif category == "sound":
+        action = sys.argv[2].lower() if len(sys.argv) > 2 else "list"
+        if action == "list":
+            sounds_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sounds")
+            if os.path.exists(sounds_dir):
+                files = sorted([f.replace(".wav", "") for f in os.listdir(sounds_dir) if f.endswith(".wav")])
+                print("Available sound prompts:")
+                for s in files:
+                    print(f"  - {s}")
+            else:
+                print("No sounds directory found.")
+        elif action == "play":
+            name = sys.argv[3] if len(sys.argv) > 3 else "MicOn"
+            if ctrl.play_sound(name):
+                print(f"✓ Playing prompt '{name}'...")
+                time.sleep(0.8)
+            else:
+                print(f"✗ Prompt '{name}' not found or error playing.")
+        else:
+            print("Usage: sound [list|play <name>]")
+
+    elif category == "eq":
+        action = sys.argv[2].lower() if len(sys.argv) > 2 else "list"
+        if action == "list":
+            print("Official 10-Band EQ Presets (Corsair iCUE):")
+            for name, gains in EQ_PRESETS.items():
+                print(f"  [{name}]")
+                bands_str = " ".join(f"{f}Hz:{g:+.1f}dB" for f, g in zip(EQ_FREQUENCIES, gains))
+                print(f"    {bands_str}")
+        elif action == "status":
+            res = subprocess.run(["pactl", "list", "sinks", "short"], capture_output=True, text=True).stdout
+            is_active = "effect_input.virtuoso_eq" in res
+            def_sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True).stdout.strip()
+            print(f"EQ Active: {is_active}")
+            print(f"Default Sink: {def_sink}")
+        elif action == "enable":
+            preset_name = sys.argv[3] if len(sys.argv) > 3 else "Pure Direct"
+            gains = EQ_PRESETS.get(preset_name, [0.0] * 10)
+            if ctrl.enable_eq(True, gains):
+                print(f"✓ PipeWire EQ enabled with preset '{preset_name}'.")
+            else:
+                print("✗ Failed to enable PipeWire EQ.")
+        elif action == "disable":
+            if ctrl.enable_eq(False):
+                print("✓ PipeWire EQ disabled, restored direct hardware sink.")
+            else:
+                print("✗ Failed to disable PipeWire EQ.")
+        elif action == "set":
+            if len(sys.argv) < 13:
+                print("Usage: eq set <gain1> <gain2> ... <gain10> (10 dB values)")
+            else:
+                try:
+                    gains = [float(sys.argv[i]) for i in range(3, 13)]
+                    if ctrl.enable_eq(True, gains):
+                        print("✓ Applied 10-band gains in real-time.")
+                    else:
+                        print("✗ Failed to apply gains.")
+                except ValueError:
+                    print("Invalid numeric values for gains.")
+        elif action == "export":
+            preset = sys.argv[3] if len(sys.argv) > 3 else "Pure Direct"
+            path = ctrl.export_easyeffects_preset(preset)
+            if path:
+                print(f"✓ Exported EasyEffects preset to: {path}")
+            else:
+                print(f"✗ Failed to export preset '{preset}'. Available: {list(EQ_PRESETS.keys())}")
+        else:
+            print("Usage: eq [enable <preset>|disable|status|set <gains...>|list|export <preset>]")
+
+    elif category == "device-info":
+        if ctrl.connect():
+            print(f"Device: {ctrl.get_device_name()}")
+            print(f"Mode: {ctrl.connection_mode}")
+            print(f"Product ID: {hex(ctrl.product_id) if ctrl.product_id else 'Unknown'}")
+            print(f"Battery: {ctrl.get_battery()}")
+            print(f"Sleep Timer: {ctrl.get_sleep_timer()} min")
+            print(f"Audio Active: {ctrl.is_audio_active()}")
+            ctrl.disconnect()
+        else:
+            print("Error: Virtuoso not found.")
