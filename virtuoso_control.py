@@ -9,6 +9,7 @@ the previous open/close pattern for each command.
 import hid
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -828,23 +829,80 @@ class VirtuosoController:
         # Set level
         return self._send_v2w(EP_HEADSET, CMD_GET, [0x47, 0x00, low_byte, high_byte])
 
-    # ─── Volumen (ALSA) ─────────────────────────────────────────────
+    # ─── Volumen (PipeWire / ALSA) ──────────────────────────────────
 
     def set_volume(self, value):
-        """Adjusts the volume via ALSA mixer."""
+        """Adjusts the headset volume via PipeWire (with ALSA mapped fallback)."""
+        val_str = f"{value}%" if "%" not in str(value) else str(value)
+        sink = self._find_pw_sink()
+        if sink is not None:
+            try:
+                r = subprocess.run(
+                    ["pactl", "set-sink-volume", sink, val_str],
+                    capture_output=True, text=True, timeout=5
+                )
+                if r.returncode == 0:
+                    return True
+                # Sink name may have changed after reconnect; invalidate and retry once
+                self._pw_sink = None
+                sink = self._find_pw_sink()
+                if sink is not None:
+                    r = subprocess.run(
+                        ["pactl", "set-sink-volume", sink, val_str],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        return True
+            except Exception:
+                pass
+
+        # Fallback: ALSA mixer with -M (perceptual mapped volume)
         card = self._find_alsa_card()
         if card is None:
-            print("Error: Corsair ALSA card not found", file=sys.stderr)
+            print("Error: Corsair audio device not found", file=sys.stderr)
             return False
         try:
-            val_str = f"{value}%" if "%" not in str(value) else str(value)
             result = subprocess.run(
-                ["amixer", "-c", card, "sset", "Headset", val_str],
+                ["amixer", "-M", "-c", card, "sset", "Headset", val_str],
                 capture_output=True, text=True, timeout=5
             )
             return result.returncode == 0
         except Exception:
             return False
+
+    def get_volume(self):
+        """Reads the current headset volume percentage (0-100) from PipeWire (or ALSA)."""
+        sink = self._find_pw_sink()
+        if sink is not None:
+            try:
+                r = subprocess.run(
+                    ["pactl", "get-sink-volume", sink],
+                    capture_output=True, text=True, timeout=5
+                )
+                if r.returncode != 0:
+                    self._pw_sink = None
+                else:
+                    m = re.search(r'(\d+)%', r.stdout)
+                    if m:
+                        return max(0, min(100, int(m.group(1))))
+            except Exception:
+                pass
+
+        card = self._find_alsa_card()
+        if card is None:
+            return None
+        try:
+            r = subprocess.run(
+                ["amixer", "-M", "-c", card, "sget", "Headset"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                m = re.search(r'\[(\d+)%\]', r.stdout)
+                if m:
+                    return max(0, min(100, int(m.group(1))))
+        except Exception:
+            pass
+        return None
 
     # ─── Micrófono (ALSA) ───────────────────────────────────────────
 
@@ -923,7 +981,7 @@ if __name__ == "__main__":
         print("Usage:")
         print("  python3 virtuoso_control.py sidetone [on|off|0-100]")
         print("  python3 virtuoso_control.py sidetone-v2w [0-100]")
-        print("  python3 virtuoso_control.py volume [0-100]")
+        print("  python3 virtuoso_control.py volume [0-100|status]")
         print("  python3 virtuoso_control.py mic [mute|unmute|status]   (PipeWire)")
         print("  python3 virtuoso_control.py battery")
         sys.exit(1)
@@ -971,11 +1029,18 @@ if __name__ == "__main__":
             print("Error: Virtuoso not found.")
 
     elif category == "volume":
-        val = sys.argv[2] if len(sys.argv) > 2 else ""
-        if ctrl.set_volume(val):
-            print(f"✓ Volumen: {val}%")
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if val == "status":
+            current_vol = ctrl.get_volume()
+            if current_vol is not None:
+                print(f"Volumen: {current_vol}%")
+            else:
+                print("✗ Could not read volume.")
         else:
-            print("✗ Error adjusting volumen.")
+            if ctrl.set_volume(val):
+                print(f"✓ Volumen: {val}%")
+            else:
+                print("✗ Error adjusting volumen.")
 
     elif category == "mic":
         val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"

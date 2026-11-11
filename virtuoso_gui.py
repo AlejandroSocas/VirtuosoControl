@@ -933,6 +933,11 @@ class VirtuosoGUI(QMainWindow):
         self.blink_timer = QTimer()
         self.blink_timer.timeout.connect(self._toggle_blink_led)
 
+        # Timer: sync volume from OS (every 1s)
+        self.volume_sync_timer = QTimer()
+        self.volume_sync_timer.timeout.connect(self._sync_volume_from_os)
+        self.volume_sync_timer.start(1000)
+
         # Connect and apply saved preferences
         self._try_initial_connect()
         self._apply_saved_settings()
@@ -1533,6 +1538,7 @@ class VirtuosoGUI(QMainWindow):
         Se llama después de _try_initial_connect()."""
         self.keep_alive_timer.start(20_000)
         self._sync_mic_from_pw()  # before RGB, so the LED starts correct
+        self._sync_volume_from_os()  # sync volume from OS on start
         self._reapply_all_settings()
 
     # ─── Conexión HID ────────────────────────────────────────────────
@@ -1888,6 +1894,18 @@ class VirtuosoGUI(QMainWindow):
         self.ctrl.set_volume(value)
         self._save_settings()
 
+    def _sync_volume_from_os(self):
+        """Synchronizes the volume slider if changed outside the app (OS / headset wheel)."""
+        if self.vol_slider.isSliderDown():
+            return
+        vol = self.ctrl.get_volume()
+        if vol is not None and vol != self.vol_slider.value():
+            self.vol_slider.blockSignals(True)
+            self.vol_slider.setValue(vol)
+            self.vol_slider.blockSignals(False)
+            self.vol_label.setText(f"{vol}%")
+            self._save_settings()
+
     # ─── Battery ─────────────────────────────────────────────────────
 
     def check_battery(self):
@@ -2075,6 +2093,8 @@ class VirtuosoGUI(QMainWindow):
         self.reconnect_timer.stop()
         self.battery_timer.stop()
         self.mic_button_timer.stop()
+        if hasattr(self, "volume_sync_timer"):
+            self.volume_sync_timer.stop()
         if hasattr(self, "blink_timer"):
             self.blink_timer.stop()
 
