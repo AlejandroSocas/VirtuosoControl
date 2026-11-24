@@ -14,6 +14,10 @@ INSTALL_DIR="/opt/virtuoso-control"
 DESKTOP_FILE="/usr/share/applications/virtuoso-control.desktop"
 UDEV_RULE="/etc/udev/rules.d/99-corsair-virtuoso-hid.rules"
 
+echo "[*] Stopping running Virtuoso Control / PipeWire DSP processes..."
+pkill -f "/opt/virtuoso-control/virtuoso_gui.py" 2>/dev/null || true
+pkill -f "virtuoso-filter-chain.conf" 2>/dev/null || true
+
 echo "[*] Removing source files from $INSTALL_DIR..."
 rm -rf "$INSTALL_DIR"
 
@@ -34,6 +38,24 @@ rm -f "$UDEV_RULE"
 udevadm control --reload-rules
 udevadm trigger
 
+USER_HOME=""
+if [ -n "$SUDO_USER" ]; then
+  USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
+if [ -z "$USER_HOME" ]; then
+  USER_HOME="$HOME"
+fi
+
+if [ -n "$USER_HOME" ]; then
+  echo "[*] Removing autostart entry and generated PipeWire DSP files..."
+  rm -f "$USER_HOME/.config/autostart/virtuoso-control.desktop"
+  rm -f "$USER_HOME/.config/pipewire/virtuoso-filter-chain.conf"
+  rm -f "$USER_HOME/.config/pipewire/virtuoso-hrir-7.1.wav"
+fi
+
+echo "[*] Removing temporary runtime files..."
+rm -f /tmp/virtuoso-dsp.log /tmp/virtuoso-71-test.wav /tmp/virtuoso-mic-on.wav /tmp/virtuoso-mic-off.wav
+
 # Same cache refresh as the installer, so the entry disappears from the menu
 # straight away instead of lingering until the next login.
 echo "[*] Refreshing desktop caches..."
@@ -51,3 +73,5 @@ echo ""
 echo "======================================"
 echo " Uninstallation completed successfully! "
 echo "======================================"
+echo "Note: User preferences (~/.config/VirtuosoControl/, ~/.config/AlejandroSocas/)"
+echo "and any exported EasyEffects presets were preserved."
