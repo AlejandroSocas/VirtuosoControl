@@ -17,352 +17,12 @@ import sys
 import time
 import wave
 
-VENDOR_ID = 0x1b1c
-PRODUCT_IDS = {
-    # Wireless Dongles
-    0x0a3e: "Wireless",  # Virtuoso SE Wireless
-    0x0a3f: "Wireless",  # Virtuoso RGB Wireless
-    0x0a42: "Wireless",  # Virtuoso Black Wireless (Slipstream)
-    0x0a46: "Wireless",  # Virtuoso White Wireless
-    0x0a4a: "Wireless",  # Virtuoso SE v2 Wireless
-    0x0a55: "Wireless",  # Virtuoso XT Wireless
-    0x0a63: "Wireless",  # Virtuoso High-Fidelity
-    0x0a64: "Wireless",  # Virtuoso Pearl Wireless
-    
-    # Wired Connections / Direct USB headsets
-    0x0a3d: "Wired",     # Virtuoso SE
-    0x0a41: "Wired",     # Virtuoso Black
-    0x0a45: "Wired",     # Virtuoso White
-    0x0a49: "Wired",     # Virtuoso SE v2
-    0x0a54: "Wired",     # Virtuoso XT
-    0x0a62: "Wired",     # Virtuoso Pearl
-}
-
-DEVICE_MODELS = {
-    0x0a3d: "Corsair Virtuoso SE (Wired)",
-    0x0a3e: "Corsair Virtuoso SE (Wireless)",
-    0x0a3f: "Corsair Virtuoso RGB (Wireless)",
-    0x0a41: "Corsair Virtuoso RGB (Wired)",
-    0x0a42: "Corsair Virtuoso RGB (Wireless Dongle)",
-    0x0a45: "Corsair Virtuoso White (Wired)",
-    0x0a46: "Corsair Virtuoso White (Wireless)",
-    0x0a49: "Corsair Virtuoso SE v2 (Wired)",
-    0x0a4a: "Corsair Virtuoso SE v2 (Wireless Dongle)",
-    0x0a54: "Corsair Virtuoso XT (Wired)",
-    0x0a55: "Corsair Virtuoso XT (Wireless)",
-    0x0a62: "Corsair Virtuoso Pearl (Wired)",
-    0x0a63: "Corsair Virtuoso High-Fidelity (Wireless)",
-    0x0a64: "Corsair Virtuoso Pearl (Wireless Dongle)",
-}
-
-# Official Corsair battery status thresholds from virtuoso_black_manifest
-BATTERY_THRESHOLDS = {
-    "CriticalLow": 15,
-    "Low": 30,
-    "Medium": 50,
-    "High": 97,
-    "Charged": 100,
-}
-
-# 10-Band Official Equalizer presets from iCUE 5 defaultUnlimitedEqualizerPresets
-EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]  # Hz
-
-EQ_PRESETS = {
-    "Pure Direct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "Movie Theater": [-1.0, 2.0, 1.0, 1.0, 3.0, 4.0, 3.0, 1.0, 1.0, 3.0],
-    "FPS Competition": [-2.0, -2.0, 1.0, 2.0, 1.0, 2.0, 4.0, 5.0, 2.0, 4.0],
-    "Clear Chat": [-2.0, -1.0, 1.0, 4.0, 5.0, 4.0, 2.0, 2.0, 1.0, 1.0],
-    "Bass Boost": [4.0, 6.0, 4.0, 0.0, -3.0, -3.0, -2.0, 1.0, 2.0, 2.0],
-}
-
-# V2W Endpoints
-EP_RECEIVER = 0x08  # Wireless Dongle/Receiver
-EP_HEADSET = 0x09   # Auriculares
-
-# Tipos de comando V2W
-CMD_GET = 0x01
-CMD_SET = 0x02
-
-# Bragi / V2W Property IDs (extracted from bragiprotocol::PropertyId)
-OP_POLLING_RATE = 0x01             # uint8
-OP_BRIGHTNESS = 0x02               # uint8 (0-100)
-OP_OPERATING_MODE = 0x03           # 0x01: HW, 0x02: SW
-OP_SLEEP_ENABLED = 0x0d            # bool (0/1) - AutomaticSleepEnabled (Bragi 0x0d)
-OP_SLEEP_TIMEOUT_NORMAL = 0x0e     # uint32 LE ms - AutomaticSleepTimeoutNormal (Bragi 0x0e)
-OP_BATTERY = 0x0f                  # uint8 (0-100%)
-OP_CHARGE = 0x10                   # 1 = charging, 2 = discharging
-OP_FIRMWARE_VERSION = 0x12         # firmware version
-OP_BOOTLOADER_VERSION = 0x13       # bootloader version
-OP_SLEEP_TIMEOUT_POWERSAVE = 0x37  # uint32 LE ms (on-device sleep timer)
-OP_SIDETONE_MUTED = 0x46           # bool (0=unmuted, 1=muted)
-OP_SIDETONE_LEVEL = 0x47           # uint16 LE (0-1000)
-OP_MIC_MUTED = 0x8e                # bool (0=active, 1=muted)
-OP_MIC_LEVEL = 0x8f                # uint8 (0-100)
-
-# Notification pushed by the headset when the physical mic-mute button is
-# pressed while in software mode: [0x03, 0x01, 0x02, down].
-# Captured from the control interface — the button reports key DOWN (1) and
-# key UP (0) roughly 100-200ms apart, it does NOT report a mute state. Act on
-# the down edge only; treating the value as a state mutes on press and unmutes
-# on release.
-MIC_BUTTON_REPORT = (0x03, 0x01, 0x02)
-
-# Asynchronous status notification the headset pushes when a value changes:
-#   [0x03, 0x01, 0x01, opcode, 0x00, lo, hi]
-# Note the payload sits one byte later than in a query reply, which is
-#   [0x01, 0x01, 0x02, 0x00, lo, hi]
-NOTIFY_STATUS = (0x03, 0x01, 0x01)
-
-
-def is_headset_audio_active(sink_name=None):
-    """Checks if audio is currently playing to the Corsair Virtuoso sink or EQ sink.
-
-    Reads 'pactl list sinks short' and checks if the state of our sink is RUNNING.
-    Returns True if audio is playing, False otherwise.
-    """
-    try:
-        res = subprocess.run(["pactl", "list", "sinks", "short"],
-                             capture_output=True, text=True, timeout=2)
-        for line in res.stdout.splitlines():
-            low = line.lower()
-            if "corsair" in low or "virtuoso" in low or "virtuoso_eq" in low:
-                state = line.strip().split()[-1]
-                if state == "RUNNING":
-                    return True
-        return False
-    except Exception:
-        return False
-
-
-def is_screen_locked():
-    """Checks if the user session/screensaver is currently locked.
-
-    Uses standard D-Bus org.freedesktop.ScreenSaver.GetActive.
-    Works reliably on KDE Plasma, GNOME, and XFCE.
-    """
-    try:
-        r = subprocess.run(
-            ["busctl", "--user", "call", "org.freedesktop.ScreenSaver",
-             "/ScreenSaver", "org.freedesktop.ScreenSaver", "GetActive"],
-            capture_output=True, text=True, timeout=2
-        )
-        if r.returncode == 0 and "b true" in r.stdout.strip():
-            return True
-    except Exception:
-        pass
-    return False
-
-
-class PipeWireEqualizer:
-    """Manages a native 10-band PipeWire biquad filter chain equalizer.
-
-    Replicates the exact APO architecture found in Corsair iCUE's CorsairGamingAudioPO64.dll:
-    - Band 1 (32 Hz): bq_lowshelf (Q=1.0)
-    - Bands 2-9 (64, 125, 250, 500, 1000, 2000, 4000, 8000 Hz): bq_peaking (Q=1.414)
-    - Band 10 (16000 Hz): bq_highshelf (Q=1.0)
-    Creates virtual sink 'effect_input.virtuoso_eq' and connects directly to the
-    Corsair Virtuoso hardware sink with bit-perfect fidelity.
-    """
-
-    def __init__(self, hw_sink_name=None):
-        self.hw_sink_name = hw_sink_name
-        self.config_dir = os.path.expanduser("~/.config/pipewire")
-        self.config_path = os.path.join(self.config_dir, "virtuoso-filter-chain.conf")
-        self.process = None
-        self.is_enabled = False
-        self.current_gains = [0.0] * 10
-
-    def find_hw_sink(self):
-        if self.hw_sink_name:
-            return self.hw_sink_name
-        try:
-            res = subprocess.run(["pactl", "list", "sinks", "short"],
-                                 capture_output=True, text=True, timeout=3)
-            for line in res.stdout.splitlines():
-                parts = line.strip().split("\t")
-                if len(parts) >= 2:
-                    name = parts[1]
-                    if ("corsair" in name.lower() or "virtuoso" in name.lower()) and "virtuoso_eq" not in name:
-                        self.hw_sink_name = name
-                        return name
-        except Exception:
-            pass
-        return None
-
-    def generate_config(self, gains):
-        hw_sink = self.find_hw_sink()
-        target_line = f'target.object = "{hw_sink}"' if hw_sink else ""
-
-        nodes_conf = []
-        links_conf = []
-
-        for i, (freq, gain) in enumerate(zip(EQ_FREQUENCIES, gains)):
-            idx = i + 1
-            node_name = f"eq_band_{idx}"
-            if i == 0:
-                label = "bq_lowshelf"
-                q_val = 1.0
-            elif i == len(EQ_FREQUENCIES) - 1:
-                label = "bq_highshelf"
-                q_val = 1.0
-            else:
-                label = "bq_peaking"
-                q_val = 1.414
-
-            nodes_conf.append(f"""                    {{
-                        type  = builtin
-                        name  = {node_name}
-                        label = {label}
-                        control = {{ "Freq" = {float(freq):.1f} "Q" = {q_val:.3f} "Gain" = {float(gain):.1f} }}
-                    }}""")
-
-            if i > 0:
-                prev_node = f"eq_band_{i}"
-                links_conf.append(f"""                    {{ output = "{prev_node}:Out" input = "{node_name}:In" }}""")
-
-        nodes_str = "\n".join(nodes_conf)
-        links_str = "\n".join(links_conf)
-
-        content = f"""context.properties = {{
-    log.level = 0
-}}
-context.spa-libs = {{
-    audio.convert.* = audioconvert/libspa-audioconvert
-    support.*       = support/libspa-support
-}}
-context.modules = [
-    {{ name = libpipewire-module-rt flags = [ ifexists nofail ] }}
-    {{ name = libpipewire-module-protocol-native }}
-    {{ name = libpipewire-module-client-node }}
-    {{ name = libpipewire-module-adapter }}
-    {{ name = libpipewire-module-filter-chain
-        args = {{
-            node.description = "Corsair Virtuoso Equalizer"
-            media.name       = "Corsair Virtuoso Equalizer"
-            filter.graph = {{
-                nodes = [
-{nodes_str}
-                ]
-                links = [
-{links_str}
-                ]
-            }}
-            audio.channels = 2
-            audio.position = [ FL FR ]
-            capture.props = {{
-                node.name   = "effect_input.virtuoso_eq"
-                media.class = Audio/Sink
-                node.description = "Corsair Virtuoso Equalizer"
-            }}
-            playback.props = {{
-                node.name   = "effect_output.virtuoso_eq"
-                node.passive = true
-                {target_line}
-            }}
-        }}
-    }}
-]
-"""
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return self.config_path
-
-    def _get_active_sink_inputs(self):
-        inputs = []
-        try:
-            res = subprocess.run(["pactl", "list", "sink-inputs", "short"],
-                                 capture_output=True, text=True, timeout=2)
-            for line in res.stdout.splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    inputs.append((parts[0], parts[1]))
-        except Exception:
-            pass
-        return inputs
-
-    def _move_streams_to_sink(self, target_sink):
-        try:
-            inputs = self._get_active_sink_inputs()
-            for input_id, _ in inputs:
-                subprocess.run(["pactl", "move-sink-input", input_id, target_sink],
-                               capture_output=True, timeout=1)
-        except Exception:
-            pass
-
-    def start(self, gains=None):
-        if gains is not None:
-            self.current_gains = [float(g) for g in gains]
-
-        self.stop_process_only()
-        self.generate_config(self.current_gains)
-
-        self.process = subprocess.Popen(
-            ["pipewire", "-c", self.config_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-
-        # Wait for sink to appear in PipeWire
-        for _ in range(25):
-            time.sleep(0.04)
-            try:
-                res = subprocess.run(["pactl", "list", "sinks", "short"],
-                                     capture_output=True, text=True, timeout=1)
-                if "effect_input.virtuoso_eq" in res.stdout:
-                    break
-            except Exception:
-                pass
-
-        # Switch default sink and move active streams
-        try:
-            subprocess.run(["pactl", "set-default-sink", "effect_input.virtuoso_eq"],
-                           capture_output=True, timeout=1)
-            self._move_streams_to_sink("effect_input.virtuoso_eq")
-        except Exception:
-            pass
-
-        self.is_enabled = True
-        return True
-
-    def stop_process_only(self):
-        if self.process:
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=1.0)
-            except Exception:
-                try:
-                    self.process.kill()
-                except Exception:
-                    pass
-            self.process = None
-
-        try:
-            subprocess.run(["pkill", "-f", "virtuoso-filter-chain.conf"],
-                           capture_output=True, timeout=1)
-        except Exception:
-            pass
-
-    def stop(self):
-        hw_sink = self.find_hw_sink()
-        if hw_sink:
-            try:
-                subprocess.run(["pactl", "set-default-sink", hw_sink],
-                               capture_output=True, timeout=1)
-                self._move_streams_to_sink(hw_sink)
-            except Exception:
-                pass
-
-        self.stop_process_only()
-        self.is_enabled = False
-        return True
-
-    def set_gains(self, gains):
-        self.current_gains = [float(g) for g in gains]
-        if self.is_enabled:
-            return self.start(self.current_gains)
-        return True
+from virtuoso_protocol import *  # noqa: F401,F403  (re-export protocol & EQ constants)
+from virtuoso_audio import (  # noqa: F401
+    PipeWireEqualizer,
+    is_headset_audio_active,
+    is_screen_locked,
+)
 
 
 class VirtuosoController:
@@ -382,9 +42,11 @@ class VirtuosoController:
         self._pw_source = None  # PipeWire source name cache
         self._pw_sink = None    # PipeWire sink name cache
         self._pending_press = False  # button press seen while flushing
+        self._pending_hw_reset = False  # headset woke up / changed operating mode
         self._last_level = None      # previous battery reading
         self._charging_inferred = False
         self._brightness = 100  # Current brightness (0-100), max by default
+        self._last_hw_brightness = None
         self._mic_led = True    # Current state of the Mic LED
         self.connection_mode = "Unknown"
         self.product_id = None
@@ -415,7 +77,7 @@ class VirtuosoController:
         # Temporarily mount dev so _send_v2w can write to it.
         saved, self.device = self.device, dev
         try:
-            if not self._send_v2w(EP_RECEIVER, CMD_SET, [0x13]):
+            if not self._send_v2w(EP_RECEIVER, CMD_GET_PROP, [OP_FIRMWARE_VERSION]):
                 return False
             for _ in range(10):
                 time.sleep(0.02)
@@ -512,10 +174,11 @@ class VirtuosoController:
         """
         if not self.device:
             return False
-        ok = self._send_v2w(EP_RECEIVER, CMD_GET, [0x03, 0x00, 0x01])
+        ok = self._send_v2w(EP_RECEIVER, CMD_SET_PROP, [OP_OPERATING_MODE, 0x00, 0x01])
         time.sleep(0.05)
-        ok = self._send_v2w(EP_HEADSET, CMD_GET, [0x03, 0x00, 0x01]) and ok
+        ok = self._send_v2w(EP_HEADSET, CMD_SET_PROP, [OP_OPERATING_MODE, 0x00, 0x01]) and ok
         time.sleep(0.05)
+        self._last_hw_brightness = None
         return ok
 
     def disconnect(self):
@@ -584,6 +247,8 @@ class VirtuosoController:
                     break
                 if len(data) > 3 and tuple(data[:3]) == MIC_BUTTON_REPORT and data[3]:
                     self._pending_press = True
+                elif len(data) > 3 and tuple(data[:3]) == NOTIFY_STATUS and data[3] in (OP_OPERATING_MODE, OP_CONNECTED_SUBDEVICES):
+                    self._pending_hw_reset = True
             except Exception:
                 break
             time.sleep(0.005)
@@ -611,71 +276,121 @@ class VirtuosoController:
         this is the line to restore.
         """
         # 1. Firmware request to receiver
-        self._send_v2w(EP_RECEIVER, CMD_SET, [0x13])
+        self._send_v2w(EP_RECEIVER, CMD_GET_PROP, [OP_FIRMWARE_VERSION])
 
         # 2. Software mode to receiver -- intentionally NOT sent, see docstring
 
         # 3. Heartbeat to receiver
-        self._send_v2w(EP_RECEIVER, CMD_SET, [0x12])
+        self._send_v2w(EP_RECEIVER, CMD_GET_PROP, [0x12])
 
-        # 4. Software mode to headset
-        self._send_v2w(EP_HEADSET, CMD_GET, [0x03, 0x00, 0x02])
+        # 4. Software mode to headset (consume its ACK so it never shifts subsequent reads)
+        self._send_v2w(EP_HEADSET, CMD_SET_PROP, [OP_OPERATING_MODE, 0x00, 0x02])
+        for _ in range(20):
+            time.sleep(0.015)
+            try:
+                r = self.device.read(64)
+                if r and len(r) > 3 and r[0] == 0x01 and r[1] == 1 and r[2] == CMD_SET_PROP:
+                    break
+            except Exception:
+                break
 
         # 5. Clean buffer de respuestas acumuladas
         self._flush_buffer()
 
-        # 6. Heartbeat to headset
-        self._send_v2w(EP_HEADSET, CMD_SET, [0x12])
+        # 6. Heartbeat to headset (consume its reply so the HID queue starts completely empty)
+        self._send_v2w(EP_HEADSET, CMD_GET_PROP, [0x12])
+        for _ in range(20):
+            time.sleep(0.015)
+            try:
+                r = self.device.read(64)
+                if r and len(r) > 3 and r[0] == 0x01 and r[1] == 1 and r[2] == CMD_GET_PROP:
+                    break
+            except Exception:
+                break
+        self._flush_buffer()
 
-        time.sleep(0.02)
-
-    def _init_leds(self):
-        """Initializes the LED endpoint (necessary for RGB control)."""
-        if getattr(self, '_leds_initialized', False):
+    def _init_leds(self, force=False):
+        """Initializes the RealTimeRgbLightings buffer (UnbindBuffers + OpenFile 0x00)."""
+        if not force and getattr(self, '_leds_initialized', False):
             return True
-        ok = self._send_v2w(EP_HEADSET, 0x0d, [0x00, 0x01])
+        self._send_v2w(EP_HEADSET, CMD_UNBIND_BUFFERS, [0x00])
+        time.sleep(0.02)
+        ok = self._send_v2w(EP_HEADSET, CMD_OPEN_FILE, [0x00, 0x01])
+        time.sleep(0.04)
+        self._flush_buffer()
         if ok:
             self._leds_initialized = True
         return ok
+
+    def set_hw_brightness(self, percent):
+        """Sets hardware LED brightness via Bragi Property 0x02 (scale 0..1000 uint16 LE).
+        Directly controls non-protected LEDs such as the Logo LED (zone 0).
+        """
+        if not self.is_connected or not self._ensure_handshake():
+            return False
+        pct = max(0, min(100, int(percent)))
+        val = int(round(pct * 10))
+        ok = self._set_bragi_property(EP_HEADSET, OP_BRIGHTNESS, [val & 0xff, (val >> 8) & 0xff])
+        if ok:
+            self._last_hw_brightness = pct
+        return ok
+
+    def get_hw_brightness(self):
+        """Queries hardware LED brightness from Bragi Property 0x02 (returns 0..100 or None)."""
+        res = self._get_bragi_property(EP_HEADSET, OP_BRIGHTNESS)
+        if res and len(res) > 5:
+            raw = res[4] | (res[5] << 8)
+            return max(0, min(100, raw // 10))
+        return None
 
     def set_all_rgb(self, logo_rgb, logo_b, mic_rgb, mic_b, batt_rgb, batt_b):
         """Adjusts the RGB color of all zones simultaneously.
         
         The command sends colors for the zones:
         [R1, R2, R3, G1, G2, G3, B1, B2, B3]
-        0=Logo, 1=Battery, 2=Microphone
+        0=Logo (controlled by OP_BRIGHTNESS 0x02), 1=Battery (protected), 2=Microphone (protected)
         """
         if not self.is_connected:
             return False
         if not self._ensure_handshake():
             return False
-            
+
         self._init_leds()
-        
+
+        # Update hardware brightness (OP_BRIGHTNESS 0x02) for Logo LED when changed
+        logo_pct = max(0, min(100, int(logo_b)))
+        if self._last_hw_brightness != logo_pct:
+            self.set_hw_brightness(logo_pct)
+
         data = [0] * 9
-        
-        # Helper to scale and assign using perceptual (quadratic) scaling
-        def _apply_zone(idx, rgb_tuple, brightness):
-            scale = (brightness / 100.0) ** 2.0
+
+        # Zone 0 (Logo): firmware applies OP_BRIGHTNESS hardware scaling (or off if 0%)
+        if logo_pct > 0:
+            data[0] = max(0, min(255, int(logo_rgb[0])))
+            data[3] = max(0, min(255, int(logo_rgb[1])))
+            data[6] = max(0, min(255, int(logo_rgb[2])))
+
+        # Protected LEDs (Zone 1 Battery, Zone 2 Mic): ignore OP_BRIGHTNESS, scale per-zone
+        def _apply_protected_zone(idx, rgb_tuple, brightness):
+            scale = (max(0, min(100, brightness)) / 100.0) ** 2.0
             data[idx] = int(rgb_tuple[0] * scale)
             data[idx + 3] = int(rgb_tuple[1] * scale)
             data[idx + 6] = int(rgb_tuple[2] * scale)
-            
-        _apply_zone(0, logo_rgb, logo_b)
-        _apply_zone(1, batt_rgb, batt_b)
-        _apply_zone(2, mic_rgb, mic_b)
-        
+
+        _apply_protected_zone(1, batt_rgb, batt_b)
+        _apply_protected_zone(2, mic_rgb, mic_b)
+
         payload = [0x00, 0x09, 0x00, 0x00, 0x00] + data
-        return self._send_v2w(EP_HEADSET, 0x06, payload)
+        return self._send_v2w(EP_HEADSET, CMD_WRITE_BUF_BEGIN, payload)
 
     def set_rgb(self, r, g, b, brightness=100):
         """Backwards compatibility method. Use set_all_rgb instead."""
-        return self.set_all_rgb((r,g,b), brightness, (0,0,0), 0, (0,0,0), 0)
+        return self.set_all_rgb((r, g, b), brightness, (0, 0, 0), 0, (0, 0, 0), 0)
 
     def send_heartbeat(self):
         """Sends V2W heartbeat to keep the session alive.
 
-        Must be called periodically (~every 20s) to prevent
+        Must be called periodically (~every 60s per RequiredPingInterval) to prevent
         the firmware from resetting the LED state.
 
         Returns:
@@ -683,7 +398,7 @@ class VirtuosoController:
         """
         if not self._ensure_handshake():
             return False
-        return self._send_v2w(EP_HEADSET, CMD_SET, [0x12])
+        return self._send_v2w(EP_HEADSET, CMD_GET_PROP, [0x12])
 
     def is_headset_alive(self):
         """Checks if the headset is actually responding (not just the dongle).
@@ -701,7 +416,7 @@ class VirtuosoController:
             return False
 
         self._flush_buffer()
-        if not self._send_v2w(EP_HEADSET, CMD_SET, [0x0f]):
+        if not self._send_v2w(EP_HEADSET, CMD_GET_PROP, [OP_BATTERY]):
             return False
 
         # Wait for a response from the headset
@@ -717,6 +432,26 @@ class VirtuosoController:
 
         return False  # No response — headset is off
 
+    def reset_session_state(self):
+        """Invalidates cached handshake/LED state so the next operation re-applies SW mode."""
+        self._handshake_done = False
+        self._leds_initialized = False
+        self._last_hw_brightness = None
+        self._pending_hw_reset = False
+
+    def get_operating_mode(self):
+        """Reads headset OperatingMode (0x03): 1=Hardware, 2=Software, None if unreachable."""
+        res = self._get_bragi_property(EP_HEADSET, OP_OPERATING_MODE, retries=1)
+        if res and len(res) > 4:
+            return res[4]
+        return None
+
+    def consume_hw_reset_event(self):
+        """Returns True once if an unsolicited wake/mode-change notification was received."""
+        val = self._pending_hw_reset
+        self._pending_hw_reset = False
+        return val
+
     # ─── Physical mic-mute button ────────────────────────────────────
 
     def poll_mic_button(self):
@@ -726,9 +461,12 @@ class VirtuosoController:
         acting on the button itself and forwards it to the host instead (see
         _do_handshake / _leave_software_mode).
 
-        Counts key-down edges only. The button reports down (1) and up (0)
+        Counts key-down edges only. The button reports key DOWN (1) and key UP (0)
         ~100-200ms apart and carries no mute state of its own, so the caller
         owns the state and toggles per press.
+
+        Also captures unsolicited NOTIFY_STATUS mode/wake notifications so the GUI
+        can restore Software Mode & RGB immediately after hardware sleep wake-up.
 
         Safe to call from a timer; the handle is non-blocking.
         """
@@ -748,6 +486,8 @@ class VirtuosoController:
                 break
             if len(data) > 3 and tuple(data[:3]) == MIC_BUTTON_REPORT and data[3]:
                 presses += 1  # key down; the matching key up is ignored
+            elif len(data) > 3 and tuple(data[:3]) == NOTIFY_STATUS and data[3] in (OP_OPERATING_MODE, OP_CONNECTED_SUBDEVICES):
+                self._pending_hw_reset = True
         return presses
 
     # ─── Mic mute (PipeWire) ─────────────────────────────────────────
@@ -806,25 +546,51 @@ class VirtuosoController:
         except Exception:
             return None
 
+    def get_mic_volume_pw(self):
+        """Reads the current microphone gain percentage (0-100) from PipeWire."""
+        for attempt in range(2):
+            src = self._find_pw_source()
+            if src is None:
+                return None
+            try:
+                r = subprocess.run(["pactl", "get-source-volume", src],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode != 0:
+                    self._pw_source = None
+                    continue
+                m = re.search(r'(\d+)%', r.stdout)
+                if m:
+                    return max(0, min(100, int(m.group(1))))
+            except Exception:
+                break
+        return None
+
+    def set_mic_volume_pw(self, value):
+        """Sets the microphone gain percentage (0-100) at the PipeWire layer."""
+        pct = max(0, min(100, int(value)))
+        for attempt in range(2):
+            src = self._find_pw_source()
+            if src is None:
+                return False
+            try:
+                r = subprocess.run(["pactl", "set-source-volume", src, f"{pct}%"],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    return True
+                self._pw_source = None
+            except Exception:
+                break
+        return False
+
     # ─── Mute feedback tone ──────────────────────────────────────────
 
-    def _find_pw_sink(self):
-        """Finds the PipeWire sink name for the headset speakers."""
-        if self._pw_sink:
+    def _find_pw_sink(self, refresh=False):
+        """Finds the Corsair Virtuoso hardware PipeWire sink for zero-hiss HW volume control."""
+        if not refresh and self._pw_sink:
             return self._pw_sink
-        try:
-            out = subprocess.run(["pactl", "list", "sinks", "short"],
-                                 capture_output=True, text=True, timeout=5).stdout
-            for line in out.splitlines():
-                low = line.lower()
-                if "corsair" in low or "virtuoso" in low:
-                    parts = line.split("\t")
-                    if len(parts) > 1:
-                        self._pw_sink = parts[1]
-                        return self._pw_sink
-        except Exception:
-            pass
-        return None
+        hw_sink = self.eq.find_hw_sink()
+        self._pw_sink = hw_sink or EQ_SINK_NAME
+        return self._pw_sink
 
     @staticmethod
     def _write_tone(path, freqs, ms=110, rate=44100, volume=0.30):
@@ -926,7 +692,7 @@ class VirtuosoController:
 
         for _ in range(3):
             self._flush_buffer()
-            if not self._send_v2w(EP_HEADSET, CMD_SET, [OP_CHARGE]):
+            if not self._send_v2w(EP_HEADSET, CMD_GET_PROP, [OP_CHARGE]):
                 return None
             for _ in range(8):
                 time.sleep(0.05)
@@ -968,7 +734,7 @@ class VirtuosoController:
         # returns a false 100% or garbage data. We take the last value.
         for _ in range(3):
             self._flush_buffer()
-            self._send_v2w(EP_HEADSET, CMD_SET, [0x0f])
+            self._send_v2w(EP_HEADSET, CMD_GET_PROP, [OP_BATTERY])
             
             for _ in range(5):
                 time.sleep(0.05)
@@ -1128,9 +894,8 @@ class VirtuosoController:
                 )
                 if r.returncode == 0:
                     return True
-                # Sink name may have changed after reconnect; invalidate and retry once
-                self._pw_sink = None
-                sink = self._find_pw_sink()
+                # Sink name may have changed after reconnect or EQ toggle; invalidate and retry once
+                sink = self._find_pw_sink(refresh=True)
                 if sink is not None:
                     r = subprocess.run(
                         ["pactl", "set-sink-volume", sink, val_str],
@@ -1157,7 +922,7 @@ class VirtuosoController:
 
     def get_volume(self):
         """Reads the current headset volume percentage (0-100) from PipeWire (or ALSA)."""
-        sink = self._find_pw_sink()
+        sink = self._find_pw_sink(refresh=True)
         if sink is not None:
             try:
                 r = subprocess.run(
@@ -1166,7 +931,13 @@ class VirtuosoController:
                 )
                 if r.returncode != 0:
                     self._pw_sink = None
-                else:
+                    sink = self._find_pw_sink(refresh=True)
+                    if sink is not None:
+                        r = subprocess.run(
+                            ["pactl", "get-sink-volume", sink],
+                            capture_output=True, text=True, timeout=5
+                        )
+                if r.returncode == 0:
                     m = re.search(r'(\d+)%', r.stdout)
                     if m:
                         return max(0, min(100, int(m.group(1))))
@@ -1258,13 +1029,62 @@ class VirtuosoController:
             pass
         return None
 
-    # ─── Sleep Timer (Auto-Shutdown) ───────────────────────────────
+    # ─── Bragi Property Helpers ──────────────────────────────────────
+
+    def _get_bragi_property(self, endpoint, prop_id, retries=2):
+        """Reads a Bragi property via CMD_GET_PROP (0x02). Returns raw 64-byte response or None.
+
+        Reply frame layout: [0x01, ep_idx (0=RX,1=HS), 0x02 (cmd echo), err (0=OK,5=unsupported), payload...]
+        """
+        if not self.is_connected or not self.device:
+            return None
+        expected_ep = 0 if endpoint == EP_RECEIVER else 1
+        for _ in range(retries):
+            self._flush_buffer()
+            if not self._send_v2w(endpoint, CMD_GET_PROP, [prop_id]):
+                return None
+            for _ in range(16):
+                time.sleep(0.02)
+                try:
+                    res = self.device.read(64)
+                except Exception:
+                    return None
+                if res and len(res) > 4 and res[0] == 0x01 and res[1] == expected_ep and res[2] == CMD_GET_PROP:
+                    if res[3] == 0:
+                        return res
+                    return None
+        return None
+
+    def _set_bragi_property(self, endpoint, prop_id, data_bytes):
+        """Writes a Bragi property via CMD_SET_PROP (0x01) and drains its RF ACK."""
+        if not self.is_connected or not self.device:
+            return False
+        if not self._send_v2w(endpoint, CMD_SET_PROP, [prop_id, 0x00] + list(data_bytes)):
+            return False
+        expected_ep = 0 if endpoint == EP_RECEIVER else 1
+        for _ in range(6):
+            time.sleep(0.015)
+            try:
+                res = self.device.read(64)
+            except Exception:
+                break
+            if not res:
+                continue
+            if len(res) > 3 and tuple(res[:3]) == MIC_BUTTON_REPORT and res[3]:
+                self._pending_press = True
+                continue
+            if len(res) > 3 and res[0] == 0x01 and res[1] == expected_ep and res[2] == CMD_SET_PROP:
+                return res[3] == 0
+        return True
+
+    # ─── Sleep Timer (Hardware Auto-Shutdown) ───────────────────────
 
     def set_sleep_timer(self, minutes):
-        """Sets the configured sleep timeout in minutes.
+        """Sets the configured sleep timeout in minutes directly in headset hardware.
 
         Range: 0 (disabled), or 1-99 minutes.
-        Also synchronizes with Bragi hardware properties 0x0d and 0x0e when connected.
+        Synchronizes Bragi properties 0x0d (AutomaticSleepEnabled) and
+        0x0e (AutomaticSleepTimeoutNormal) via CMD_SET_PROP (0x01).
         """
         try:
             mins = int(minutes)
@@ -1274,18 +1094,16 @@ class VirtuosoController:
         mins = max(0, min(99, mins))
         self._sleep_timer_minutes = mins
 
-        # If connected and handshake active, synchronize Bragi sleep properties with hardware
-        if self.is_connected and self._handshake_done:
+        if self.is_connected and self._ensure_handshake():
             try:
-                # 0x0d: AutomaticSleepEnabled (1 if mins > 0 else 0)
                 enabled = 1 if mins > 0 else 0
-                self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_ENABLED, 0x00, enabled])
+                self._set_bragi_property(EP_HEADSET, OP_SLEEP_ENABLED, [enabled])
                 if mins > 0:
-                    # 0x0e: AutomaticSleepTimeoutNormal (ms in uint32 LE)
                     ms = mins * 60 * 1000
-                    payload = [OP_SLEEP_TIMEOUT_NORMAL, 0x00,
-                               ms & 0xff, (ms >> 8) & 0xff, (ms >> 16) & 0xff, (ms >> 24) & 0xff]
-                    self._send_v2w(EP_HEADSET, CMD_SET, payload)
+                    self._set_bragi_property(
+                        EP_HEADSET, OP_SLEEP_TIMEOUT_NORMAL,
+                        list(ms.to_bytes(4, byteorder="little"))
+                    )
             except Exception:
                 pass
 
@@ -1297,33 +1115,96 @@ class VirtuosoController:
 
     def get_hw_sleep_timer(self):
         """Queries the hardware sleep timeout from Bragi properties 0x0d and 0x0e.
-        Returns a dict with 'enabled' and 'timeout_ms' or None if unqueried.
+        Returns a dict with 'enabled', 'timeout_ms', and 'timeout_min' or None if unqueried.
         """
         if not self.is_connected or not self._ensure_handshake():
             return None
         info = {}
         try:
-            self._flush_buffer()
-            if self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_ENABLED]):
-                for _ in range(5):
-                    time.sleep(0.03)
-                    res = self.device.read(64)
-                    if res and len(res) > 4 and res[0] == 0x01:
-                        info["enabled"] = bool(res[4])
-                        break
-            self._flush_buffer()
-            if self._send_v2w(EP_HEADSET, CMD_SET, [OP_SLEEP_TIMEOUT_NORMAL]):
-                for _ in range(5):
-                    time.sleep(0.03)
-                    res = self.device.read(64)
-                    if res and len(res) > 7 and res[0] == 0x01:
-                        ms = res[4] | (res[5] << 8) | (res[6] << 16) | (res[7] << 24)
-                        info["timeout_ms"] = ms
-                        info["timeout_min"] = ms // 60000
-                        break
+            res_en = self._get_bragi_property(EP_HEADSET, OP_SLEEP_ENABLED)
+            if res_en and len(res_en) > 4:
+                info["enabled"] = bool(res_en[4])
+            res_to = self._get_bragi_property(EP_HEADSET, OP_SLEEP_TIMEOUT_NORMAL)
+            if res_to and len(res_to) > 7:
+                ms = int.from_bytes(res_to[4:8], byteorder="little")
+                info["timeout_ms"] = ms
+                info["timeout_min"] = ms // 60000
         except Exception:
             pass
         return info if info else None
+
+    # ─── Hardware Power Saving & Device Info ────────────────────────
+
+    def set_power_saving_mode(self, enabled):
+        """Enables or disables hardware Power Saving mode (Bragi property 0x0b)."""
+        if not self.is_connected or not self._ensure_handshake():
+            return False
+        return self._set_bragi_property(EP_HEADSET, OP_POWER_SAVING, [1 if enabled else 0])
+
+    def get_power_saving_mode(self):
+        """Queries hardware Power Saving mode (Bragi property 0x0b)."""
+        if not self.is_connected or not self._ensure_handshake():
+            return None
+        res = self._get_bragi_property(EP_HEADSET, OP_POWER_SAVING)
+        if res and len(res) > 4:
+            return bool(res[4])
+        return None
+
+    @staticmethod
+    def _format_fw_version(res):
+        if not res or len(res) < 8:
+            return None
+        major = res[4]
+        minor = res[5]
+        build = res[6] | (res[7] << 8)
+        return f"v{major}.{minor}.{build}"
+
+    def get_device_hw_info(self):
+        """Queries full hardware telemetry via Bragi GET_PROPERTY (0x02)."""
+        info = {
+            "model": self.get_device_name(),
+            "mode": self.connection_mode,
+            "product_id": hex(self.product_id) if self.product_id else "Unknown",
+        }
+        if not self.is_connected:
+            return info
+
+        try:
+            rx_fw = self._get_bragi_property(EP_RECEIVER, OP_FIRMWARE_VERSION)
+            if rx_fw:
+                info["dongle_fw"] = self._format_fw_version(rx_fw)
+            rx_enc = self._get_bragi_property(EP_RECEIVER, OP_ENCRYPTION_STATUS)
+            if rx_enc and len(rx_enc) > 4:
+                info["rf_encryption"] = bool(rx_enc[4])
+        except Exception:
+            pass
+
+        if "Wired" not in self.connection_mode and self._ensure_handshake():
+            try:
+                hs_fw = self._get_bragi_property(EP_HEADSET, OP_FIRMWARE_VERSION)
+                if hs_fw:
+                    info["headset_fw"] = self._format_fw_version(hs_fw)
+                hs_bl = self._get_bragi_property(EP_HEADSET, OP_BOOTLOADER_VERSION)
+                if hs_bl:
+                    info["bootloader_fw"] = self._format_fw_version(hs_bl)
+                poll = self._get_bragi_property(EP_HEADSET, OP_POLLING_RATE)
+                if poll and len(poll) > 4 and poll[4] > 0:
+                    hz_map = {1: 125, 2: 250, 3: 500, 4: 1000, 5: 2000}
+                    info["polling_rate_hz"] = hz_map.get(poll[4], poll[4])
+                ps = self._get_bragi_property(EP_HEADSET, OP_POWER_SAVING)
+                if ps and len(ps) > 4:
+                    info["power_saving"] = bool(ps[4])
+                volt = self._get_bragi_property(EP_HEADSET, OP_BATTERY_VOLTAGE)
+                if volt and len(volt) > 5:
+                    mv = volt[4] | (volt[5] << 8)
+                    if 2500 <= mv <= 5000:
+                        info["battery_mv"] = mv
+                hw_sleep = self.get_hw_sleep_timer()
+                if hw_sleep:
+                    info["hw_sleep"] = hw_sleep
+            except Exception:
+                pass
+        return info
 
     # ─── Notificaciones de Audio Oficiales (Voice Prompts) ───────────
 
@@ -1429,14 +1310,32 @@ class VirtuosoController:
 
     def enable_eq(self, enabled, gains=None):
         """Enables or disables the real-time PipeWire 10-band equalizer."""
-        if enabled:
-            return self.eq.start(gains)
-        else:
-            return self.eq.stop()
+        self.eq.eq_enabled = bool(enabled)
+        if gains is not None:
+            self.eq.current_gains = [float(g) for g in gains]
+        res = self.eq._reconcile_dsp()
+        self._pw_sink = None
+        return res
+
+    def enable_surround(self, enabled):
+        """Enables or disables PipeWire 7.1 Virtual Surround."""
+        res = self.eq.set_surround(enabled)
+        self._pw_sink = None
+        return res
 
     def set_eq_gains(self, gains):
         """Sets the 10-band equalizer gains in real-time."""
-        return self.eq.set_gains(gains)
+        res = self.eq.set_gains(gains)
+        self._pw_sink = None
+        return res
+
+    def route_eq_streams(self):
+        """Routes active streams playing to the HW sink through the EQ sink."""
+        self.eq.route_streams_to_eq()
+
+    def play_surround_test(self):
+        """Plays an 8-channel 7.1 surround test sweep."""
+        return self.eq.play_surround_test()
 
     def is_audio_active(self):
         """Checks if audio is currently playing to the headset."""
@@ -1497,13 +1396,18 @@ class VirtuosoController:
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
+        print("  python3 virtuoso_control.py rgb <r> <g> <b> [brightness]")
+        print("  python3 virtuoso_control.py brightness [0-100|status]")
         print("  python3 virtuoso_control.py sidetone [on|off|0-100]")
         print("  python3 virtuoso_control.py sidetone-v2w [0-100]")
         print("  python3 virtuoso_control.py volume [0-100|status]")
         print("  python3 virtuoso_control.py mic [mute|unmute|status]   (PipeWire)")
+        print("  python3 virtuoso_control.py mic-volume [0-100|status]   (PipeWire)")
         print("  python3 virtuoso_control.py battery")
         print("  python3 virtuoso_control.py sleep [minutes|off|status]")
+        print("  python3 virtuoso_control.py power-save [on|off|status]")
         print("  python3 virtuoso_control.py eq [enable <preset>|disable|status|set <gains...>|list|export <preset>]")
+        print("  python3 virtuoso_control.py surround [on|off|status|test]")
         print("  python3 virtuoso_control.py sound [list|play <sound_name>]")
         print("  python3 virtuoso_control.py device-info")
         sys.exit(1)
@@ -1580,6 +1484,69 @@ if __name__ == "__main__":
         else:
             print("Usage: mic [mute|unmute|status]")
 
+    elif category == "brightness":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if ctrl.connect():
+            if val == "status":
+                b = ctrl.get_hw_brightness()
+                print(f"Hardware Brightness: {b}%" if b is not None else "✗ Could not read hardware brightness.")
+            else:
+                if ctrl.set_hw_brightness(int(val)):
+                    print(f"✓ Hardware Brightness: {val}%")
+                else:
+                    print("✗ Error adjusting hardware brightness.")
+            ctrl.disconnect()
+        else:
+            print("Error: Virtuoso not found.")
+
+    elif category == "mic-volume":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if val == "status":
+            v = ctrl.get_mic_volume_pw()
+            print(f"Mic Volume: {v}%" if v is not None else "✗ Could not read mic volume.")
+        else:
+            if ctrl.set_mic_volume_pw(int(val)):
+                print(f"✓ Mic Volume: {val}%")
+            else:
+                print("✗ Error adjusting mic volume.")
+
+    elif category == "surround":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if val == "status":
+            res = subprocess.run(["pactl", "list", "sinks", "short"], capture_output=True, text=True).stdout
+            is_active = EQ_SINK_NAME in res
+            print(f"DSP Sink Active: {is_active}")
+        elif val == "test":
+            res = subprocess.run(["pactl", "list", "sinks", "short"], capture_output=True, text=True).stdout
+            ctrl.eq.is_enabled = EQ_SINK_NAME in res
+            if ctrl.play_surround_test():
+                print("✓ Playing 7.1 8-channel surround test sweep (FL->FC->FR->SR->RR->RL->SL->LFE)...")
+                time.sleep(4.2)
+            else:
+                print("✗ Failed to play 7.1 surround test.")
+        elif val in ("on", "off"):
+            if ctrl.enable_surround(val == "on"):
+                print(f"✓ Virtual 7.1 Surround: {val.upper()}")
+            else:
+                print("✗ Failed to toggle Virtual 7.1 Surround.")
+        else:
+            print("Usage: surround [on|off|status|test]")
+
+    elif category == "power-save":
+        val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if ctrl.connect():
+            if val == "status":
+                ps = ctrl.get_power_saving_mode()
+                print(f"Power Saving Mode: {ps}" if ps is not None else "✗ Could not read power saving mode.")
+            elif val in ("on", "off"):
+                if ctrl.set_power_saving_mode(val == "on"):
+                    print(f"✓ Power Saving Mode: {val.upper()}")
+                else:
+                    print("✗ Error setting power saving mode.")
+            ctrl.disconnect()
+        else:
+            print("Error: Virtuoso not found.")
+
     elif category == "sleep":
         val = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
         if val == "status":
@@ -1592,13 +1559,19 @@ if __name__ == "__main__":
                     print(f"Hardware Sleep: {hw}")
                 ctrl.disconnect()
         elif val == "off":
+            connected = ctrl.connect()
             ctrl.set_sleep_timer(0)
-            print("✓ Sleep timer disabled (0 min).")
+            if connected:
+                ctrl.disconnect()
+            print("✓ Hardware Sleep timer disabled (0 min).")
         else:
             try:
                 mins = int(val)
+                connected = ctrl.connect()
                 ctrl.set_sleep_timer(mins)
-                print(f"✓ Sleep timer set to {mins} min.")
+                if connected:
+                    ctrl.disconnect()
+                print(f"✓ Hardware Sleep timer set to {mins} min.")
             except ValueError:
                 print("Usage: sleep [minutes|off|status]")
 
@@ -1673,11 +1646,29 @@ if __name__ == "__main__":
 
     elif category == "device-info":
         if ctrl.connect():
-            print(f"Device: {ctrl.get_device_name()}")
-            print(f"Mode: {ctrl.connection_mode}")
-            print(f"Product ID: {hex(ctrl.product_id) if ctrl.product_id else 'Unknown'}")
+            hw = ctrl.get_device_hw_info()
+            print(f"Device: {hw.get('model')}")
+            print(f"Mode: {hw.get('mode')}")
+            print(f"Product ID: {hw.get('product_id')}")
+            if "headset_fw" in hw:
+                print(f"Headset Firmware: {hw['headset_fw']}")
+            if "dongle_fw" in hw:
+                print(f"Dongle Firmware: {hw['dongle_fw']}")
+            if "bootloader_fw" in hw:
+                print(f"Bootloader: {hw['bootloader_fw']}")
+            if "polling_rate_hz" in hw:
+                print(f"Polling Rate: {hw['polling_rate_hz']} Hz")
+            if "rf_encryption" in hw:
+                print(f"RF Encryption: {'Enabled' if hw['rf_encryption'] else 'Disabled'}")
+            if "power_saving" in hw:
+                print(f"Power Saving Mode: {'Enabled' if hw['power_saving'] else 'Disabled'}")
+            if "battery_mv" in hw:
+                print(f"Battery Voltage: {hw['battery_mv']} mV")
             print(f"Battery: {ctrl.get_battery()}")
-            print(f"Sleep Timer: {ctrl.get_sleep_timer()} min")
+            if "hw_sleep" in hw:
+                print(f"Hardware Sleep: {hw['hw_sleep']}")
+            else:
+                print(f"Sleep Timer: {ctrl.get_sleep_timer()} min")
             print(f"Audio Active: {ctrl.is_audio_active()}")
             ctrl.disconnect()
         else:

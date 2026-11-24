@@ -8,8 +8,9 @@ A lightweight, persistent, and native control panel for the Corsair Virtuoso (SE
 
 ## Key Features
 
-*   **Compact 2-Column Dashboard:** Ergonomically designed two-column grid layout (740 × 578 px) keeping all essential controls in view without awkward vertical scrolling. The UI automatically follows your desktop's light or dark preference and switches live without requiring a restart.
+*   **Compact 2-Column Dashboard:** Ergonomically designed two-column grid layout (740 px wide, auto-fitted height) keeping all essential controls in view without vertical scrolling. The UI automatically follows your desktop's light or dark preference and switches live without requiring a restart.
 *   **10-Band Real-Time PipeWire Equalizer:** Native 10-band graphic/parametric equalizer powered directly by PipeWire's DSP filter-chain. Includes the exact 10 frequency bands matching official Corsair iCUE (32 Hz, 64 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz, 16 kHz), smooth 150 ms debounced tuning, and one-click export of equalizer presets to **EasyEffects** (`~/.config/easyeffects/output/`).
+*   **Virtual 7.1 Surround (PipeWire Binaural HRIR) & Zero-Hiss Volume:** Native 8-channel (`FL, FR, FC, LFE, RL, RR, SL, SR`) binaural HRIR convolver downmix chained with the 10-band EQ. Both 2.0 EQ and 7.1 Surround keep the headset hardware sink (`HW_VOLUME_CTRL`) as the system default sink while pinning the virtual DSP node at 100% unity gain (`node.pause-on-idle = true`), eliminating background static hiss and keeping the desktop slider and headset volume wheel responsive at all times. Includes a built-in **Test 7.1** 8-channel discrete speaker sweep (`pw-play` / `paplay`).
 *   **Official iCUE Sound Presets:** Ships with the official Corsair audio profiles extracted from iCUE:
     *   *Pure Direct* (Flat / Studio reference)
     *   *Movie Theater* (Immersive cinematic enhancement)
@@ -17,26 +18,18 @@ A lightweight, persistent, and native control panel for the Corsair Virtuoso (SE
     *   *Clear Chat* (Vocal clarity and mid-range boost)
     *   *Bass Boost* (Deep low-end punch)
     *   *Custom* (Full manual 10-band user tuning)
-*   **Hardware Smart Sleep & Standby (`SleepMode_StoreInDevice`):** Reverses and implements Corsair's native on-device sleep architecture. Programs the headset MCU's internal sleep registers (`0x0d`, `0x0e`, `0x37`) to work seamlessly with the headset's internal accelerometer / motion sensor. Intelligently coordinates with host PipeWire audio playback and desktop lock screens:
-    *   Automatically mutes hardware ALSA sidetone and switches off LEDs upon entering sleep.
-    *   Exits software control mode during standby, allowing the headset MCU to power down its RF transceiver without interference from polling pings.
-    *   Passive, non-invasive wake-up detection when the headset is moved or audio resumes.
-    *   Configurable timeout selector (1 min Debug, 5 min, 10 min Default, 15, 30, 60, 90 min, or Off).
-*   **Official iCUE Voice Prompts:** Includes authentic voice notifications extracted from Corsair iCUE (*"Mic On"*, *"Mic Off"*, *"Connected"*, *"Disconnected"*, etc.) with a toggle option in Settings.
-*   **Dual Sidetone Engine (ALSA & V2W HID):** Independent hardware sidetone feedback control with support for both the native kernel ALSA mixer and direct V2W HID protocol packets, plus an option to automatically disable sidetone when closing the app or entering standby.
-*   **Accurate Battery Monitor & Hardware Indicators:** Reads actual battery state reliably, displaying exact percentages, charging status, and synchronizing with the headset's physical battery status LED (Green, Yellow, Red). Sends a desktop notification if battery drops below 15%.
-*   **Smart Battery Polling:** Prevents the headset from emitting annoying "reconnection beeps" when battery is low (<15%) by automatically suspending wireless battery queries until connected via USB to charge.
-*   **Dynamic Tray Icon:** The system tray icon acts as a live battery meter, dynamically filling up and changing colors (Green, Yellow, Red, or Blue when charging) based on the headset's battery level.
-*   **Full RGB Lighting & Profiles:** Control the exact color and brightness of both the side Logo and the Microphone LED through native color pickers (wireless mode). Save up to 3 custom **RGB Profiles** and switch between them instantly from either the UI buttons or the system tray context menu.
-*   **Physical Mic-Mute Button:** The headset's physical mute button maintains full hardware functionality. The app tracks state changes instantly, mutes the OS input, sets the mic LED to your custom "muted" color, and plays audio feedback.
-*   **Dual-Mode Support (Wired / Dongle):** Automatically detects whether you are connected via the 2.4 GHz Slipstream wireless dongle or directly through USB-C, adapting available features accordingly.
-*   **Bilingual Support (English & Spanish):** Seamlessly switch the entire application interface between English and Spanish directly from the Settings menu.
-*   **Universal Autostart (FreeDesktop) & Start Minimized:** Option to start minimized to the system tray and register an autostart desktop entry for seamless background launch across GNOME, KDE, XFCE, and modern Wayland/X11 desktops.
-*   **Persistent Connection:** Official iCUE-compatible heartbeat keeps the HID session alive, eliminating unexpected device disconnects.
+*   **Native Hardware Sleep & Wake Recovery (`SleepMode_StoreInDevice`):** Programs the headset MCU's internal sleep registers (`OP_SLEEP_ENABLED = 0x0d`, `OP_SLEEP_TIMEOUT_NORMAL = 0x0e`) to work natively with the headset's built-in accelerometer / motion sensor. Includes configurable timeout presets (1 min Debug, 5 min, 10 min Default, 15, 30, 60, 90 min, or Off) and automatic Software Mode / LED / sidetone recovery when the headset wakes up (`OP_OPERATING_MODE = 0x03`, 25 s keep-alive).
+*   **Full RGB Lighting, Logo Brightness & Dynamic Effects:** Control the exact color and hardware brightness (`OP_BRIGHTNESS = 0x02`) of both the side Logo and the Microphone LED (wireless mode), choose between **Static**, **Rainbow**, **Color Pulse**, **Color Shift**, and **Battery Reactive** effects with speed control (*Slow / Medium / Fast*) and *Quick Colors*, and save/load up to **3 custom RGB Profiles** from the UI or tray menu.
+*   **Microphone Gain & Physical Mute Button:** Dedicated PipeWire microphone input gain slider (0–100%) synced with the OS, plus full tracking of the headset's physical mute button (mutes PipeWire input, switches mic LED to your custom mute color, and plays audio feedback).
+*   **Official iCUE Voice Prompts & Reminders:** Authentic voice cues extracted from Corsair iCUE (*"Mic On"*, *"Mic Off"*, *"Surround On"*, *"Surround Off"*, *"Battery Low"*, etc.) with optional periodic voice reminders for low battery and muted microphone in Settings.
+*   **Hardware Power Saving & Live Device Info:** Toggle hardware power saving (`OP_POWER_SAVING = 0x0b`) and inspect real-time device telemetry inside Settings (headset & dongle firmware versions, polling rate in Hz, RF encryption status, battery voltage in mV, and hardware sleep configuration).
+*   **Sidetone Control:** Independent sidetone level and mute toggle via the native ALSA mixer (the V2W UI toggle safely routes to ALSA to avoid firmware lockups from incompatible Void opcodes), with an option to turn off sidetone when closing the app.
+*   **Accurate Battery Monitor & Configurable Tray Icons:** Reads battery percentage, voltage, and charging state reliably, synchronizes the physical battery LED (Green, Yellow, Orange, Red / blinking), disables polling under 15% when unplugged to avoid firmware beeps, and lets you show the Virtuoso icon, a dynamic Battery meter icon, or both in the system tray.
+*   **Bilingual Support (English & Spanish) & Autostart:** Switch live UI strings between English and Spanish from Settings, and configure universal FreeDesktop autostart and "start minimized to tray".
 
 ## Prerequisites
 
-The application requires `python3`, `pipewire` (for the equalizer), and a few standard libraries:
+The application requires `python3`, `pipewire` (for EQ and 7.1 Surround), `pw-play` / `paplay`, and `hidapi` + `PyQt6`.
 
 ### USB permissions (required for all methods)
 
@@ -51,7 +44,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ### Option A: Automated system-wide installation (Recommended)
 
-Run the installation script with superuser privileges (installs udev rules, copies icons, audio assets, and application files to `/opt/virtuoso-control`):
+Run the installation script with superuser privileges (installs udev rules, copies icons, audio assets, and all modular Python files to `/opt/virtuoso-control`):
 
 ```bash
 sudo ./install.sh
@@ -92,6 +85,37 @@ python3 virtuoso_gui.py
 
 *(Ensure your user belongs to the `audio` or `input` group if required by your distribution for ALSA mixer synchronization).*
 
+## CLI Usage
+
+The backend controller can also be used standalone from the terminal:
+
+```bash
+python3 virtuoso_control.py battery                # Read battery % and charging state
+python3 virtuoso_control.py device-info            # Dump FW, polling rate, RF encryption & voltage
+python3 virtuoso_control.py brightness 80          # Set hardware Logo LED brightness (0-100)
+python3 virtuoso_control.py rgb 255 180 0 100      # Set Logo color and brightness
+python3 virtuoso_control.py mic-volume 85          # Set PipeWire microphone gain (0-100)
+python3 virtuoso_control.py eq enable "FPS Competition"
+python3 virtuoso_control.py surround on            # Enable 8ch PipeWire Virtual 7.1 Surround
+python3 virtuoso_control.py surround test          # Play 8-channel discrete speaker test sweep
+python3 virtuoso_control.py sleep 10               # Set hardware auto-sleep timeout in minutes
+python3 virtuoso_control.py power-save on          # Toggle hardware power saving mode
+```
+
+## Project Structure
+
+```text
+├── virtuoso_protocol.py   # USB IDs, EQ bands/presets, and Bragi/V2W protocol constants
+├── virtuoso_audio.py      # PipeWire 10-band EQ & binaural 7.1 HRIR DSP state machine
+├── virtuoso_control.py    # Persistent HID/V2W controller, battery/ALSA control, and CLI
+├── virtuoso_i18n.py       # English / Spanish translation catalog and _tr() helper
+├── virtuoso_theme.py      # Light/dark palettes, QSS stylesheet, and vector icon painters
+├── virtuoso_widgets.py    # Custom painted widgets (BatteryGauge, ColorSwatch, etc.) & SettingsDialog
+├── virtuoso_gui.py        # Main PyQt6 dashboard, tray integration, and timers
+├── assets/ & sounds/      # UI SVG assets and official iCUE voice prompts
+└── install.sh / uninstall.sh
+```
+
 ## Uninstallation
 
 To completely remove the program, its shortcuts, and udev rules from your system:
@@ -102,9 +126,9 @@ sudo ./uninstall.sh
 
 ## Architecture & Reverse Engineering
 
-This project was developed through deep reverse-engineering of Corsair iCUE binaries (`iCUE.dll`, `BragiProtocols.dll`, and Qt RCC manifests) using **REA (Reverse-Engineer-Anything)** and binary analysis, combined with USB/HID packet inspection via Wireshark:
+This project was developed through reverse-engineering of Corsair iCUE binaries (`iCUE.dll`, `BragiProtocols.dll`, and Qt RCC manifests) combined with USB/HID packet inspection via Wireshark:
 
-*   **Bragi Protocol (`0x08` / `0x09` commands):** Reverse-engineered the proprietary property get/set mechanism (`OP_SLEEP_ENABLED = 0x0d`, `OP_SLEEP_TIMEOUT_NORMAL = 0x0e`, `OP_BATTERY_LEVEL = 0x07`, etc.) enabling direct hardware control of the headset MCU.
-*   **On-Device Inactivity & Motion Sensor:** Implements the `SleepMode_StoreInDevice` specification. The Corsair Virtuoso hardware features an internal ultra-low-power accelerometer / IMU; the software coordinates host audio stream playback (via PipeWire) and screen lock state with the headset's onboard inactivity countdown.
-*   **10-Band Parametric Filter Chain:** The exact frequency response curves, center frequencies (32 Hz to 16 kHz), and default Q/gain values of Corsair's equalizer were decompiled from iCUE's audio DSP configuration and mapped directly onto PipeWire's `filter-chain` module and EasyEffects presets.
-*   **Clean Dual-Mode Sidetone:** Solved sidetone retention and noise leakage by interfacing with both the USB audio dongle's ALSA mixer hardware path and the proprietary V2W HID command layer.
+*   **Bragi Protocol (`EP_RECEIVER = 0x08` / `EP_HEADSET = 0x09`):** Verified property commands (`CMD_SET_PROP = 0x01`, `CMD_GET_PROP = 0x02`, `CMD_PING = 0x11`) and hardware registers (`OP_BRIGHTNESS = 0x02`, `OP_OPERATING_MODE = 0x03`, `OP_POWER_SAVING = 0x0b`, `OP_SLEEP_ENABLED = 0x0d`, `OP_SLEEP_TIMEOUT_NORMAL = 0x0e`, `OP_BATTERY = 0x0f`, `OP_FIRMWARE_VERSION = 0x13`, `OP_BATTERY_VOLTAGE = 0x53`).
+*   **On-Device Inactivity & Motion Sensor:** Implements `SleepMode_StoreInDevice` directly in the headset MCU firmware so the onboard accelerometer controls sleep/wake natively, while the GUI detects Software/Hardware mode transitions (`OP_OPERATING_MODE`) and re-applies lighting/settings cleanly on wake.
+*   **10-Band EQ + Binaural 7.1 Filter Chain:** Maps iCUE's exact frequency bands (32 Hz low-shelf, 64 Hz–8 kHz peaking Q=1.414, 16 kHz high-shelf) and a 14-channel HeSuVi-compatible HRIR convolver onto PipeWire's `libpipewire-module-filter-chain` with deterministic node lifecycle management and zero-hiss unity-gain DSP routing.
+*   **Safe Dual-Mode Sidetone:** Drives the USB audio dongle's ALSA mixer path cleanly while safeguarding the Virtuoso MCU against incompatible Void V2W sidetone opcodes.

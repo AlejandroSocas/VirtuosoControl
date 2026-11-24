@@ -17,888 +17,20 @@ import os
 import math
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
-                             QFrame, QSystemTrayIcon, QMenu, QCheckBox,
-                             QButtonGroup, QColorDialog, QDialog, QMessageBox,
-                             QComboBox, QAbstractButton, QToolButton, QSizePolicy)
-from PyQt6.QtCore import (Qt, QTimer, QSettings, QRectF, QLineF, QSize,
-                          QPointF, QThread, QCoreApplication, QEvent)
-from PyQt6.QtGui import (QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen,
-                         QFont, QPalette, QPolygonF)
+                             QSystemTrayIcon, QMenu, QCheckBox, QButtonGroup,
+                             QColorDialog, QMessageBox, QToolButton)
+from PyQt6.QtCore import (Qt, QTimer, QSettings, QSize, QThread,
+                          QCoreApplication, QEvent)
+from PyQt6.QtGui import QIcon, QAction, QColor, QPixmap, QPainter, QBrush, QPen
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+
 from virtuoso_control import VirtuosoController, EQ_PRESETS, EQ_FREQUENCIES, BATTERY_THRESHOLDS
+from virtuoso_i18n import _tr
+from virtuoso_theme import (THEME, BATT_LEVEL, POWER_SAVING_BRIGHTNESS, c,
+                            apply_theme, make_settings_icon, make_refresh_icon)
+from virtuoso_widgets import (StatusDot, ColorSwatch, BatteryGauge,
+                              ThemedComboBox, Card, SettingsDialog)
 
-TRANSLATIONS = {
-    "es": {
-        "Settings": "Configuración",
-        "Start automatically with Linux": "Iniciar automáticamente con Linux",
-        "Start minimized in system tray": "Iniciar minimizado en la bandeja",
-        "Language (requires restart):": "Idioma (requiere reinicio):",
-        "Save": "Guardar",
-        "Cancel": "Cancelar",
-        "Connecting...": "Conectando...",
-        "Battery": "Batería",
-        "Refresh": "Actualizar",
-        "Microphone": "Micrófono",
-        "Pick Color": "Elegir Color",
-        "Color:": "Color:",
-        "Brightness:": "Brillo:",
-        "RGB Lighting": "Iluminación RGB",
-        "Sidetone": "Sidetone",
-        "Method:": "Método:",
-        "Disable Sidetone": "Desactivar Sidetone",
-        "Enable Sidetone": "Activar Sidetone",
-        "Level:": "Nivel:",
-        "Volume": "Volumen",
-        "Profile 1": "Perfil 1",
-        "Profile 2": "Perfil 2",
-        "Profile 3": "Perfil 3",
-        "Save 1": "Guardar 1",
-        "Save 2": "Guardar 2",
-        "Save 3": "Guardar 3",
-        "🎨 RGB Profiles": "🎨 Perfiles RGB",
-        "Load Profile 1": "Cargar Perfil 1",
-        "Load Profile 2": "Cargar Perfil 2",
-        "Load Profile 3": "Cargar Perfil 3",
-        "Open": "Abrir",
-        "Quit": "Salir",
-        "Connected": "Conectado",
-        "Disconnected": "Desconectado",
-        "Searching for device...": "Buscando dispositivo...",
-        "Wired": "Por cable",
-        "Wireless": "Inalámbrico",
-        "Not connected": "No conectado",
-        "Charging": "Cargando",
-        "Discharging": "Descargando",
-        "Handshake error": "Error de conexión",
-        "Read error": "Error de lectura",
-        "No response (try again)": "Sin respuesta",
-        "Pick Logo Color": "Elegir Color del Logo",
-        "Pick Microphone Color": "Elegir Color del Micrófono",
-        "🔊 Sidetone: Enabled": "🔊 Sidetone: Activado",
-        "🔇 Sidetone: Disabled": "🔇 Sidetone: Desactivado",
-        "🎤 Mic: Active": "🎤 Micrófono: Activo",
-        "🎤 Mic: Muted": "🎤 Micrófono: Silenciado",
-        "Muted color:": "Color silenciado:",
-        "Pick Mute Color": "Elegir Color Silenciado",
-        "Mute feedback sound": "Sonido al silenciar",
-        "Turn off when closing the app": "Apagar al cerrar la aplicación",
-        "Tray icon:": "Icono de bandeja:",
-        "Virtuoso icon": "Icono de Virtuoso",
-        "Battery icon": "Icono de batería",
-        "Both": "Ambos",
-        "Profile Saved": "Perfil Guardado",
-        "Error": "Error",
-        "⚠️ Low Battery — Virtuoso SE": "⚠️ Batería Baja — Virtuoso SE",
-        "⚠️ Very Low Battery — Virtuoso SE": "⚠️ Batería Muy Baja — Virtuoso SE",
-        "The headset is at {}% battery.": "Los auriculares están al {}% de batería.",
-        "The headset is at {}% battery. Power saving mode enabled.": "Los auriculares están al {}% de batería. Ahorro de energía activado.",
-        "The application is already running.": "La aplicación ya está en ejecución.",
-        "Virtuoso Control is already running in the background or in the system tray.": "Virtuoso Control ya está activo en segundo plano o en la bandeja del sistema.",
-        "Lighting": "Iluminación",
-        "Logo": "Logo",
-        "Mic": "Micrófono",
-        "Muted": "Silenciado",
-        "Active": "Activo",
-        "Profiles": "Perfiles",
-        "Save to Profile 1": "Guardar en Perfil 1",
-        "Save to Profile 2": "Guardar en Perfil 2",
-        "Save to Profile 3": "Guardar en Perfil 3",
-        "Save current lighting to a profile": "Guardar la iluminación actual en un perfil",
-        "N/A (Wired)": "N/D (Cable)",
-        "Level": "Nivel",
-        "Brightness": "Brillo",
-        "Method": "Método",
-        "Status": "Estado",
-        "Sleep": "Reposo",
-        "Off": "Desactivado",
-        "Default": "Por defecto",
-        "Equalizer": "Ecualizador",
-        "Enable Equalizer": "Activar Ecualizador",
-        "Standby (Sleeping)": "En reposo (Standby)",
-        "Preset:": "Preset:",
-        "Export EasyEffects": "Exportar para EasyEffects",
-        "Exported EasyEffects preset to:": "Preset de EasyEffects exportado a:",
-        "Enable official voice prompts": "Activar avisos de voz oficiales (iCUE)",
-        "Voice Prompts": "Avisos de voz",
-        "Pure Direct": "Pure Direct",
-        "Movie Theater": "Cine",
-        "FPS Competition": "Competición FPS",
-        "Clear Chat": "Voz Clara",
-        "Bass Boost": "Realce de Graves",
-        "Custom": "Personalizado",
-        "Quick Colors": "Colores rápidos",
-        "Corsair Yellow": "Amarillo Corsair",
-        "Pure White": "Blanco Puro",
-        "Ice Blue": "Azul Glaciar",
-        "Red Alert": "Alerta Roja",
-        "Stealth (Off)": "Sigilo (Apagado)",
-        "Debug": "Depuración",
-    }
-}
-
-def _tr(text):
-    s = QSettings("AlejandroSocas", "VirtuosoControl")
-    lang = s.value("language", "en", type=str)
-    if lang == "es" and text in TRANSLATIONS["es"]:
-        return TRANSLATIONS["es"][text]
-    return text
-
-# ─── Theme ──────────────────────────────────────────────────────────
-#
-# The app follows the desktop's light/dark preference. Every colour used by
-# the stylesheet *and* by the hand-painted widgets below comes from one of
-# these two dicts, so switching schemes is a matter of swapping THEME and
-# re-applying — see apply_theme().
-
-PALETTES = {
-    "dark": {
-        "window":      "#14161b",
-        "surface":     "#1c1f26",
-        "surface_alt": "#232732",
-        "border":      "#2e333f",
-        "text":        "#e6e8ee",
-        "text_muted":  "#8d94a5",
-        "accent":      "#4c9aff",
-        "accent_hi":   "#63a9ff",
-        "accent_lo":   "#3d86e6",
-        "on_accent":   "#0d1117",
-        "track":       "#2b3040",
-        "ok":          "#35d07f",
-        "good":        "#ffff00",
-        "warn":        "#f0b429",
-        "danger":      "#ff5c5c",
-        "handle":      "#f2f4f8",
-    },
-    "light": {
-        "window":      "#f2f4f7",
-        "surface":     "#ffffff",
-        "surface_alt": "#eef1f5",
-        "border":      "#d7dce4",
-        "text":        "#171a20",
-        "text_muted":  "#626b7b",
-        "accent":      "#2f6fd0",
-        "accent_hi":   "#3c7de0",
-        "accent_lo":   "#2860ba",
-        "on_accent":   "#ffffff",
-        "track":       "#dde2ea",
-        "ok":          "#12925a",
-        "good":        "#d4D400",
-        "warn":        "#b8770a",
-        "danger":      "#d0342c",
-        "handle":      "#ffffff",
-    },
-}
-
-THEME = dict(PALETTES["dark"])
-
-# ─── Battery limit constants (aligned with official Corsair iCUE manifest) ────
-BATT_LEVEL = {
-    "HIGH":       50,
-    "MEDIUM":     30,
-    "LOW":        15,
-    "NOTIFY_LOW": 15,  # For system notification (CriticalLow in manifest).
-}
-
-# ─── Brightness level limits for LEDs ───────────────────────────────
-POWER_SAVING_BRIGHTNESS = {
-    "RGB_fixed":    0, # % Left and right LEDs.
-    "MIC_fixed":   25, # % Microphone LED.
-    "RGB_max":   0.25, # %/100
-    "MIC_max":   0.50, # %/100
-}
-
-
-def c(key):
-    """QColor for a theme key. Painted widgets read their colours through this."""
-    return QColor(THEME[key])
-
-
-def detect_scheme(app):
-    """'dark' or 'light', from the desktop preference.
-
-    Qt 6.5+ reports the platform's colour-scheme hint directly; the palette
-    lightness check is a fallback for platforms that leave it Unknown.
-    """
-    try:
-        scheme = app.styleHints().colorScheme()
-        if scheme == Qt.ColorScheme.Dark:
-            return "dark"
-        if scheme == Qt.ColorScheme.Light:
-            return "light"
-    except AttributeError:
-        pass
-    return "dark" if app.palette().color(
-        QPalette.ColorRole.Window).lightness() < 128 else "light"
-
-
-def build_palette(p):
-    """QPalette mirroring the theme.
-
-    QSS cannot reach the primitives the style draws itself — the checkbox tick
-    is the visible one: restyling `::indicator` in QSS removes the tick and
-    there is no bundled image to put back. Those primitives follow the
-    QPalette instead, so both have to be kept in step or checkboxes come out
-    dark on the light skin.
-    """
-    pal = QPalette()
-    window, surface = QColor(p["window"]), QColor(p["surface"])
-    text, muted = QColor(p["text"]), QColor(p["text_muted"])
-    accent = QColor(p["accent"])
-
-    roles = {
-        QPalette.ColorRole.Window: window,
-        QPalette.ColorRole.WindowText: text,
-        QPalette.ColorRole.Base: surface,
-        QPalette.ColorRole.AlternateBase: QColor(p["surface_alt"]),
-        QPalette.ColorRole.Text: text,
-        QPalette.ColorRole.Button: QColor(p["surface_alt"]),
-        QPalette.ColorRole.ButtonText: text,
-        QPalette.ColorRole.ToolTipBase: QColor(p["surface_alt"]),
-        QPalette.ColorRole.ToolTipText: text,
-        QPalette.ColorRole.PlaceholderText: muted,
-        QPalette.ColorRole.Highlight: accent,
-        QPalette.ColorRole.HighlightedText: QColor(p["on_accent"]),
-        QPalette.ColorRole.Link: accent,
-    }
-    for role, color in roles.items():
-        pal.setColor(role, color)
-    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
-                 QPalette.ColorRole.ButtonText):
-        pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
-    return pal
-
-
-def build_stylesheet(p):
-    """The whole app skin, interpolated from a palette dict.
-
-    Checkbox and radio indicators are deliberately left unstyled here — see
-    build_palette() for why. The sidetone method picker is not a radio pair for
-    the same reason: it is two checkable buttons in an exclusive group, which
-    QSS *can* redraw as a segmented control.
-    """
-    return f"""
-    QMainWindow, QDialog {{
-        background: {p['window']};
-    }}
-    QToolTip {{
-        background: {p['surface_alt']};
-        color: {p['text']};
-        border: 1px solid {p['border']};
-        padding: 4px 6px;
-        border-radius: 4px;
-    }}
-
-    /* Cards */
-    QFrame#Card {{
-        background: {p['surface']};
-        border: 1px solid {p['border']};
-        border-radius: 12px;
-    }}
-    QLabel#CardTitle {{
-        color: {p['text_muted']};
-        font-size: 11px;
-        font-weight: 700;
-    }}
-    QLabel#Muted {{
-        color: {p['text_muted']};
-    }}
-    QLabel#RowLabel {{
-        color: {p['text_muted']};
-        font-size: 12px;
-    }}
-    QLabel#Value {{
-        color: {p['text']};
-        font-size: 12px;
-        font-weight: 600;
-    }}
-    QLabel#BattPercent {{
-        font-size: 26px;
-        font-weight: 700;
-    }}
-    QLabel#StatusText {{
-        font-size: 13px;
-        font-weight: 600;
-    }}
-
-    /* Buttons */
-    QPushButton, QToolButton {{
-        background: {p['surface_alt']};
-        border: 1px solid {p['border']};
-        border-radius: 8px;
-        padding: 6px 12px;
-        color: {p['text']};
-    }}
-    QPushButton:hover, QToolButton:hover {{
-        background: {p['border']};
-    }}
-    QPushButton:pressed, QToolButton:pressed {{
-        background: {p['accent_lo']};
-        color: {p['on_accent']};
-    }}
-    QPushButton:disabled, QToolButton:disabled {{
-        color: {p['text_muted']};
-        background: {p['surface']};
-        border-color: {p['surface_alt']};
-    }}
-    QPushButton#IconBtn {{
-        padding: 0px;
-        min-width: 28px;
-        max-width: 28px;
-        min-height: 28px;
-        max-height: 28px;
-        border-radius: 8px;
-        font-size: 14px;
-    }}
-    QPushButton#Primary {{
-        background: {p['accent']};
-        border-color: {p['accent']};
-        color: {p['on_accent']};
-        font-weight: 600;
-        padding: 8px 12px;
-    }}
-    QPushButton#Primary:hover {{
-        background: {p['accent_hi']};
-        border-color: {p['accent_hi']};
-    }}
-    QPushButton#Primary:checked {{
-        background: {p['surface_alt']};
-        border-color: {p['border']};
-        color: {p['text_muted']};
-    }}
-    QPushButton#Primary:disabled {{
-        background: {p['surface']};
-        border-color: {p['surface_alt']};
-        color: {p['text_muted']};
-    }}
-    QPushButton#Profile {{
-        padding: 5px 0px;
-        font-weight: 600;
-    }}
-    QToolButton#SaveMenu::menu-indicator {{
-        image: none;
-    }}
-
-    /* Segmented control (sidetone method) */
-    QPushButton#SegLeft, QPushButton#SegRight {{
-        background: {p['surface_alt']};
-        border: 1px solid {p['border']};
-        border-radius: 0px;
-        color: {p['text_muted']};
-        padding: 3px 10px;
-        font-size: 11px;
-        font-weight: 600;
-    }}
-    QPushButton#SegLeft:hover, QPushButton#SegRight:hover {{
-        color: {p['text']};
-    }}
-    QPushButton#SegLeft:checked, QPushButton#SegRight:checked {{
-        background: {p['accent']};
-        border-color: {p['accent']};
-        color: {p['on_accent']};
-    }}
-    QPushButton#SegLeft:disabled, QPushButton#SegRight:disabled {{
-        color: {p['text_muted']};
-        background: {p['surface']};
-        border-color: {p['surface_alt']};
-    }}
-    QPushButton#SegLeft {{
-        border-top-left-radius: 7px;
-        border-bottom-left-radius: 7px;
-        border-right: none;
-    }}
-    QPushButton#SegRight {{
-        border-top-right-radius: 7px;
-        border-bottom-right-radius: 7px;
-    }}
-
-    /* Sliders */
-    QSlider::groove:horizontal {{
-        height: 5px;
-        background: {p['track']};
-        border-radius: 3px;
-    }}
-    QSlider::sub-page:horizontal {{
-        background: {p['accent']};
-        border-radius: 3px;
-    }}
-    QSlider::handle:horizontal {{
-        background: {p['handle']};
-        border: 2px solid {p['accent']};
-        width: 12px;
-        height: 12px;
-        margin: -6px 0px;
-        border-radius: 8px;
-    }}
-    QSlider::handle:horizontal:hover {{
-        border-color: {p['accent_hi']};
-    }}
-    QSlider::groove:horizontal:disabled {{
-        background: {p['surface_alt']};
-    }}
-    QSlider::sub-page:horizontal:disabled {{
-        background: {p['border']};
-    }}
-    QSlider::handle:horizontal:disabled {{
-        background: {p['surface_alt']};
-        border-color: {p['border']};
-    }}
-
-    /* QCheckBox is intentionally absent: any QSS rule matching it hands
-       indicator drawing to QStyleSheetStyle, which has no tick image to draw
-       and renders a bare checkmark with no box. It is themed by palette only. */
-
-    QComboBox {{
-        background: {p['surface_alt']};
-        border: 1px solid {p['border']};
-        border-radius: 8px;
-        /* Right padding clears the strip ThemedComboBox paints into. */
-        padding: 5px 26px 5px 10px;
-        color: {p['text']};
-    }}
-    QComboBox:hover {{
-        border-color: {p['accent']};
-    }}
-    QComboBox:disabled {{
-        color: {p['text_muted']};
-        background: {p['surface']};
-        border-color: {p['surface_alt']};
-    }}
-    /* The default arrow is suppressed rather than restyled — there is no
-       image to give it. ThemedComboBox.paintEvent draws the chevron. */
-    QComboBox::drop-down {{
-        border: none;
-        background: transparent;
-        width: 26px;
-    }}
-    QComboBox::down-arrow {{
-        image: none;
-        width: 0px;
-        height: 0px;
-    }}
-    QComboBox QAbstractItemView {{
-        background: {p['surface']};
-        border: 1px solid {p['border']};
-        selection-background-color: {p['accent']};
-        selection-color: {p['on_accent']};
-        outline: none;
-    }}
-
-    QMenu {{
-        background: {p['surface']};
-        border: 1px solid {p['border']};
-        border-radius: 8px;
-        padding: 4px;
-    }}
-    QMenu::item {{
-        padding: 6px 18px 6px 12px;
-        border-radius: 6px;
-    }}
-    QMenu::item:selected {{
-        background: {p['accent']};
-        color: {p['on_accent']};
-    }}
-    QMenu::item:disabled {{
-        color: {p['text_muted']};
-    }}
-    QMenu::separator {{
-        height: 1px;
-        background: {p['border']};
-        margin: 4px 8px;
-    }}
-    """
-
-
-def apply_theme(app, scheme=None):
-    """Swaps THEME to the given (or detected) scheme and re-skins the app.
-
-    The platform style is deliberately left alone. Forcing Fusion was tried and
-    reverted: Fusion derives the checkbox indicator's frame from palette shades
-    that this palette flattens, so checked boxes came out as a bare tick with no
-    box. The desktop's own style draws them correctly from the same palette.
-    """
-    if scheme is None:
-        scheme = detect_scheme(app)
-    THEME.clear()
-    THEME.update(PALETTES[scheme])
-    app.setPalette(build_palette(THEME))
-    # Base size is set on the application font rather than in QSS, because a
-    # QSS rule broad enough to cover every widget would also match QCheckBox.
-    font = app.font()
-    font.setPixelSize(13)
-    app.setFont(font)
-    app.setStyleSheet(build_stylesheet(THEME))
-    return scheme
-
-
-ICON_UNITS = 16      # logical drawing space for the painted icons
-ICON_SCALE = 4       # device pixels per unit, so the icons stay crisp on hidpi
-
-
-def _icon_painter(color, width=1.6):
-    """Sets up a transparent pixmap and a stroked painter over ICON_UNITS².
-
-    Both header icons are painted rather than typed: ⚙ and ↻ resolve to
-    full-colour emoji glyphs on a typical Linux font stack, which ignore the
-    palette and clash with everything else in the window.
-    """
-    pm = QPixmap(ICON_UNITS * ICON_SCALE, ICON_UNITS * ICON_SCALE)
-    pm.setDevicePixelRatio(ICON_SCALE)
-    pm.fill(Qt.GlobalColor.transparent)
-
-    pt = QPainter(pm)
-    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color))
-    pen.setWidthF(width)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    pt.setPen(pen)
-    return pm, pt
-
-
-def make_settings_icon(color):
-    """Rails with knobs — a settings/sliders glyph.
-
-    Two rails, not three: at a 16px icon size a third rail closes the gaps up
-    until the whole thing reads as a smudge.
-    """
-    pm, pt = _icon_painter(color, 1.7)
-
-    rails = ((5.5, 10.2), (10.5, 6.0))
-    knob_r, x0, x1 = 1.75, 1.9, 14.1
-    gap = knob_r + 1.2
-    for y, knob_x in rails:
-        # Rail drawn either side of the knob so the knob never has to be
-        # filled with the button's background colour to stay readable.
-        pt.drawLine(QLineF(x0, y, knob_x - gap, y))
-        pt.drawLine(QLineF(knob_x + gap, y, x1, y))
-    pt.setBrush(QBrush(QColor(color)))
-    pt.setPen(Qt.PenStyle.NoPen)
-    for y, knob_x in rails:
-        pt.drawEllipse(QRectF(knob_x - knob_r, y - knob_r, knob_r * 2, knob_r * 2))
-    pt.end()
-    return QIcon(pm)
-
-
-def make_refresh_icon(color):
-    """Open circular arrow — reconnect / re-read."""
-    pm, pt = _icon_painter(color, 1.6)
-    cx = cy = 8.0
-    r = 5.0
-    # The sweep stops well short of a full turn: the gap is what makes the
-    # arrowhead legible as an arrowhead at 16px rather than a lump on a ring.
-    start, span = 40, 250           # degrees, counter-clockwise
-    pt.setBrush(Qt.BrushStyle.NoBrush)
-    pt.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), start * 16, span * 16)
-
-    # Arrowhead on the leading end of the sweep, aligned to the tangent there.
-    end = math.radians(start + span)
-    tip_x, tip_y = cx + r * math.cos(end), cy - r * math.sin(end)
-    tangent = (-math.sin(end), -math.cos(end))
-    normal = (math.cos(end), -math.sin(end))
-    pt.setPen(Qt.PenStyle.NoPen)
-    pt.setBrush(QBrush(QColor(color)))
-    pt.drawPolygon(QPolygonF([
-        QPointF(tip_x + tangent[0] * 3.6, tip_y + tangent[1] * 3.6),
-        QPointF(tip_x + normal[0] * 2.4, tip_y + normal[1] * 2.4),
-        QPointF(tip_x - normal[0] * 2.4, tip_y - normal[1] * 2.4),
-    ]))
-    pt.end()
-    return QIcon(pm)
-
-
-# ─── Painted widgets ────────────────────────────────────────────────
-#
-# These draw themselves from THEME rather than from QSS, because QSS cannot
-# express a rounded progress fill or a soft status glow.
-
-class StatusDot(QWidget):
-    """Small filled circle with a halo — the connection indicator."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(14, 14)
-        self._color = c("text_muted")
-
-    def set_color(self, color):
-        self._color = QColor(color)
-        self.update()
-
-    def paintEvent(self, _event):
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        halo = QColor(self._color)
-        halo.setAlpha(60)
-        pt.setPen(Qt.PenStyle.NoPen)
-        pt.setBrush(QBrush(halo))
-        pt.drawEllipse(QRectF(0, 0, 14, 14))
-        pt.setBrush(QBrush(self._color))
-        pt.drawEllipse(QRectF(3.5, 3.5, 7, 7))
-        pt.end()
-
-
-class ColorSwatch(QAbstractButton):
-    """Clickable colour chip. Replaces the old preview-label + button pair."""
-
-    def __init__(self, color="#ff0000", parent=None):
-        super().__init__(parent)
-        self._color = QColor(color)
-        self.setFixedSize(38, 24)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def color(self):
-        return QColor(self._color)
-
-    def set_color(self, color):
-        self._color = QColor(color)
-        self.update()
-
-    def paintEvent(self, _event):
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
-
-        fill = QColor(self._color)
-        if not self.isEnabled():
-            fill.setAlpha(70)
-        pt.setBrush(QBrush(fill))
-
-        edge = c("accent") if (self.underMouse() and self.isEnabled()) else c("border")
-        pen = QPen(edge)
-        pen.setWidthF(1.5)
-        pt.setPen(pen)
-        pt.drawRoundedRect(rect, 7, 7)
-        pt.end()
-
-    def enterEvent(self, event):
-        super().enterEvent(event)
-        self.update()
-
-    def leaveEvent(self, event):
-        super().leaveEvent(event)
-        self.update()
-
-
-class BatteryGauge(QWidget):
-    """Rounded capacity bar. Colour tracks charge level / charging state."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(8)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._percent = None
-        self._charging = False
-
-    def set_state(self, percent, charging):
-        self._percent = percent
-        self._charging = charging
-        self.update()
-
-    def level_color(self):
-        if self._percent is None:
-            return c("text_muted")
-        if self._charging:
-            return c("accent")
-        if self._percent >= BATT_LEVEL["HIGH"]:
-            return c("ok")
-        if self._percent >= BATT_LEVEL["MEDIUM"]:
-            return c("good")
-        if self._percent >= BATT_LEVEL["LOW"]:
-            return c("warn")
-        return c("danger")
-
-    def paintEvent(self, _event):
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        h = self.height()
-        r = h / 2
-
-        pt.setPen(Qt.PenStyle.NoPen)
-        pt.setBrush(QBrush(c("track")))
-        pt.drawRoundedRect(QRectF(0, 0, self.width(), h), r, r)
-
-        if self._percent:
-            # Never narrower than the capsule is tall, so 1–4% still reads as
-            # a dot rather than a sliver clipped away by the rounded corners.
-            w = max(h, self.width() * min(self._percent, 100) / 100.0)
-            pt.setBrush(QBrush(self.level_color()))
-            pt.drawRoundedRect(QRectF(0, 0, w, h), r, r)
-        pt.end()
-
-
-class ThemedComboBox(QComboBox):
-    """Combo box that paints its own chevron.
-
-    Same trap as QCheckBox (see build_stylesheet): styling the combo at all
-    hands its subcontrols to QStyleSheetStyle, which has no image for
-    ::down-arrow and falls back to a crude built-in triangle that ignores the
-    palette. There is no bundled image to point it at, so the QSS suppresses
-    the arrow entirely and it is drawn here instead.
-    """
-
-    ARROW_BOX = 26      # reserved strip on the right, matches QSS padding
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(c("text") if self.isEnabled() else c("text_muted"))
-        pen.setWidthF(1.6)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        pt.setPen(pen)
-
-        cx = self.width() - self.ARROW_BOX / 2
-        cy = self.height() / 2
-        w, h = 4.5, 2.6      # half-width / half-height of the chevron
-        pt.drawPolyline(QPolygonF([
-            QPointF(cx - w, cy - h / 2),
-            QPointF(cx, cy + h),
-            QPointF(cx + w, cy - h / 2),
-        ]))
-        pt.end()
-
-
-class Card(QFrame):
-    """Titled rounded container. `body` is the layout callers add rows to."""
-
-    def __init__(self, title=None, parent=None):
-        super().__init__(parent)
-        self.setObjectName("Card")
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 13)
-        outer.setSpacing(9)
-
-        self.header = QHBoxLayout()
-        self.header.setSpacing(8)
-        if title:
-            self.title_label = QLabel(title.upper())
-            self.title_label.setObjectName("CardTitle")
-            # QSS has no letter-spacing; the tracked small-caps look that makes
-            # these read as section headings has to be set on the font.
-            font = self.title_label.font()
-            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
-            self.title_label.setFont(font)
-            self.header.addWidget(self.title_label)
-        self.header.addStretch()
-        outer.addLayout(self.header)
-
-        self.body = QVBoxLayout()
-        self.body.setSpacing(9)
-        outer.addLayout(self.body)
-
-    def add_header_widget(self, widget):
-        self.header.addWidget(widget)
-
-class SettingsDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(_tr("Settings"))
-        self.setFixedWidth(340)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 14)
-        layout.setSpacing(12)
-
-        self.autostart_cb = QCheckBox(_tr("Start automatically with Linux"))
-        self.minimized_cb = QCheckBox(_tr("Start minimized in system tray"))
-        self.voice_prompts_cb = QCheckBox(_tr("Enable official voice prompts"))
-
-        self.tray_mode_combo = ThemedComboBox()
-        self.tray_mode_combo.addItem(_tr("Virtuoso icon"), "virtuoso")
-        self.tray_mode_combo.addItem(_tr("Battery icon"), "battery")
-        self.tray_mode_combo.addItem(_tr("Both"), "both")
-
-        self.lang_combo = ThemedComboBox()
-        self.lang_combo.addItem("English", "en")
-        self.lang_combo.addItem("Español", "es")
-
-        layout.addWidget(self.autostart_cb)
-        layout.addWidget(self.minimized_cb)
-        layout.addWidget(self.voice_prompts_cb)
-        # Stacked rather than side by side: the Spanish label for the language
-        # row is long enough to squeeze the combo box down to nothing.
-        for text, combo in ((_tr("Tray icon:"), self.tray_mode_combo),
-                            (_tr("Language (requires restart):"), self.lang_combo)):
-            caption = QLabel(text)
-            caption.setObjectName("RowLabel")
-            layout.addWidget(caption)
-            layout.addWidget(combo)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-        save_btn = QPushButton(_tr("Save"))
-        save_btn.setObjectName("Primary")
-        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        save_btn.clicked.connect(self.save_and_close)
-        cancel_btn = QPushButton(_tr("Cancel"))
-        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        cancel_btn.clicked.connect(self.reject)
-
-        btn_layout.addStretch()
-        btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(save_btn)
-        layout.addSpacing(4)
-        layout.addLayout(btn_layout)
-
-        self.load_settings()
-        self.adjustSize()
-        self.setFixedHeight(self.sizeHint().height())
-
-    def load_settings(self):
-        s = QSettings("AlejandroSocas", "VirtuosoControl")
-        self.minimized_cb.setChecked(s.value("start_minimized", False, type=bool))
-        self.voice_prompts_cb.setChecked(s.value("voice_prompts", True, type=bool))
-        mode = s.value("tray_icon_mode", "virtuoso", type=str)
-        idx = self.tray_mode_combo.findData(mode)
-        if idx >= 0:
-            self.tray_mode_combo.setCurrentIndex(idx)
-        
-        lang = s.value("language", "en", type=str)
-        index = self.lang_combo.findData(lang)
-        if index >= 0:
-            self.lang_combo.setCurrentIndex(index)
-            
-        autostart_path = os.path.expanduser("~/.config/autostart/virtuoso-control.desktop")
-        self.autostart_cb.setChecked(os.path.exists(autostart_path))
-
-    def save_and_close(self):
-        s = QSettings("AlejandroSocas", "VirtuosoControl")
-        s.setValue("start_minimized", self.minimized_cb.isChecked())
-        s.setValue("voice_prompts", self.voice_prompts_cb.isChecked())
-        s.setValue("language", self.lang_combo.currentData())
-        s.setValue("tray_icon_mode", self.tray_mode_combo.currentData())
-        
-        autostart_dir = os.path.expanduser("~/.config/autostart")
-        autostart_path = os.path.join(autostart_dir, "virtuoso-control.desktop")
-        
-        if self.autostart_cb.isChecked():
-            if not os.path.exists(autostart_dir):
-                os.makedirs(autostart_dir)
-            # Icon is the themed NAME, matching install.sh. An absolute path
-            # here gets cached by the shell and goes stale when the file is
-            # replaced. Resolving it needs install.sh to have run — as does
-            # the hardcoded Exec path just below it.
-            desktop_content = (
-                "[Desktop Entry]\n"
-                "Name=Virtuoso Control\n"
-                "Comment=Native control panel for Corsair Virtuoso SE headset\n"
-                "Exec=python3 /opt/virtuoso-control/virtuoso_gui.py\n"
-                "Icon=virtuoso-control\n"
-                "Terminal=false\n"
-                "Type=Application\n"
-                # "Audio" alone is invalid without "AudioVideo" — the spec
-                # validator flags it as an error that will become fatal.
-                "Categories=AudioVideo;Audio;Settings;HardwareSettings;\n"
-                "StartupWMClass=virtuoso-control\n"
-            )
-            with open(autostart_path, "w") as f:
-                f.write(desktop_content)
-        else:
-            if os.path.exists(autostart_path):
-                os.remove(autostart_path)
-                
-        self.accept()
 
 class VirtuosoGUI(QMainWindow):
     def __init__(self):
@@ -924,7 +56,6 @@ class VirtuosoGUI(QMainWindow):
         self._load_settings()   # Load preferences (signals blocked)
         self._sync_mic_status()
         self.init_tray()        # Tray with quick actions
-        QApplication.instance().installEventFilter(self)
 
         # Height is locked to the assembled content rather than hardcoded, so
         # the window stays tight whichever language the labels are in.
@@ -938,7 +69,7 @@ class VirtuosoGUI(QMainWindow):
         except AttributeError:
             pass
 
-        # Timer: LED keep-alive (every 20s)
+        # Timer: LED keep-alive (60s per official RequiredPingInterval)
         self.keep_alive_timer = QTimer()
         self.keep_alive_timer.timeout.connect(self.do_keep_alive)
 
@@ -962,7 +93,7 @@ class VirtuosoGUI(QMainWindow):
         self.blink_timer = QTimer()
         self.blink_timer.timeout.connect(self._toggle_blink_led)
 
-        # Timer: sync volume from OS (every 1s)
+        # Timer: sync volume and mic gain from OS (every 1s)
         self.volume_sync_timer = QTimer()
         self.volume_sync_timer.timeout.connect(self._sync_volume_from_os)
         self.volume_sync_timer.start(1000)
@@ -972,12 +103,17 @@ class VirtuosoGUI(QMainWindow):
         self.eq_apply_timer.setSingleShot(True)
         self.eq_apply_timer.timeout.connect(self._apply_current_eq)
 
-        # Inactivity & Smart Sleep Manager
-        self.sleep_inactivity_seconds = 0
-        self.is_sleeping = False
-        self.inactivity_timer = QTimer(self)
-        self.inactivity_timer.timeout.connect(self._check_inactivity)
-        self.inactivity_timer.start(5000)
+        # Dynamic RGB effect timer (~15 FPS, active only for dynamic effects)
+        self._effect_phase = 0.0
+        self.rgb_effect_timer = QTimer(self)
+        self.rgb_effect_timer.timeout.connect(self._tick_rgb_effect)
+
+        # Voice prompt reminder timers (low battery & muted mic)
+        self.low_batt_remind_timer = QTimer(self)
+        self.low_batt_remind_timer.timeout.connect(self._on_low_batt_reminder)
+        self.mic_mute_remind_timer = QTimer(self)
+        self.mic_mute_remind_timer.timeout.connect(self._on_mic_mute_reminder)
+        self._configure_reminder_timers()
 
         # Connect and apply saved preferences
         self._try_initial_connect()
@@ -992,10 +128,11 @@ class VirtuosoGUI(QMainWindow):
     # ─── Interface ───────────────────────────────────────────────────
 
     def open_settings(self):
-        dlg = SettingsDialog(self)
+        dlg = SettingsDialog(self, ctrl=self.ctrl)
         if dlg.exec():
             s = QSettings("AlejandroSocas", "VirtuosoControl")
             self._voice_prompts = s.value("voice_prompts", True, type=bool)
+            self._configure_reminder_timers()
             self._setup_tray_icons()  # applies without a restart
 
     def _refresh_icons(self):
@@ -1031,7 +168,7 @@ class VirtuosoGUI(QMainWindow):
     # Every card indents its controls past a label column of this width. It is
     # measured rather than hardcoded: at a fixed 54px the English labels fit
     # but "Micrófono" and "Silenciado" are cut off mid-word.
-    ROW_LABELS = ("Logo", "Mic", "Profiles", "Status", "Muted", "Level", "Sleep", "Preset:")
+    ROW_LABELS = ("Logo", "Mic", "Effect", "Profiles", "Status", "Gain", "Muted", "Level", "Sleep", "Preset:")
 
     def _measure_row_label_width(self):
         fm = self.fontMetrics()
@@ -1260,8 +397,31 @@ class VirtuosoGUI(QMainWindow):
         quick_row.addWidget(self._row_label(_tr("Presets")))
         quick_row.addWidget(self.quick_lighting_combo, 1)
 
+        # Effect & Speed row
+        self.rgb_effect_combo = ThemedComboBox()
+        for label, key in ((_tr("Static"), "Static"),
+                           (_tr("Rainbow"), "Rainbow"),
+                           (_tr("Color Pulse"), "ColorPulse"),
+                           (_tr("Color Shift"), "ColorShift"),
+                           (_tr("Battery Reactive"), "Battery")):
+            self.rgb_effect_combo.addItem(label, key)
+        self.rgb_effect_combo.currentIndexChanged.connect(self._on_rgb_effect_changed)
+
+        self.rgb_speed_combo = ThemedComboBox()
+        for label, mult in ((_tr("Slow"), 0.5), (_tr("Medium"), 1.0), (_tr("Fast"), 2.0)):
+            self.rgb_speed_combo.addItem(label, mult)
+        self.rgb_speed_combo.setCurrentIndex(1)
+        self.rgb_speed_combo.currentIndexChanged.connect(self._on_rgb_effect_changed)
+
+        effect_row = QHBoxLayout()
+        effect_row.setSpacing(8)
+        effect_row.addWidget(self._row_label(_tr("Effect")))
+        effect_row.addWidget(self.rgb_effect_combo, 2)
+        effect_row.addWidget(self.rgb_speed_combo, 1)
+
         card.body.addLayout(logo_row)
         card.body.addLayout(mic_row)
+        card.body.addLayout(effect_row)
         card.body.addLayout(quick_row)
         card.body.addLayout(profile_row)
         return card
@@ -1280,6 +440,15 @@ class VirtuosoGUI(QMainWindow):
         state_row.addWidget(self.mic_state_label)
         state_row.addStretch()
 
+        # Mic gain/volume slider (PipeWire)
+        self.mic_vol_slider = self._make_slider(100, self.change_mic_volume)
+        self.mic_vol_label = self._value_label("100%")
+        mic_vol_row = QHBoxLayout()
+        mic_vol_row.setSpacing(10)
+        mic_vol_row.addWidget(self._row_label(_tr("Gain")))
+        mic_vol_row.addWidget(self.mic_vol_slider, 1)
+        mic_vol_row.addWidget(self.mic_vol_label)
+
         # Colour the mic LED takes while muted (red on Windows, but yours).
         self.mic_mute_color_btn = ColorSwatch()
         self.mic_mute_color_btn.setToolTip(_tr("Pick Mute Color"))
@@ -1295,6 +464,7 @@ class VirtuosoGUI(QMainWindow):
         self.mic_tone_cb.toggled.connect(self._save_settings)
 
         card.body.addLayout(state_row)
+        card.body.addLayout(mic_vol_row)
         card.body.addLayout(mute_color_row)
         card.body.addWidget(self.mic_tone_cb)
         return card
@@ -1392,6 +562,21 @@ class VirtuosoGUI(QMainWindow):
         self.eq_preset_combo.addItem(_tr("Custom"), "Custom")
         self.eq_preset_combo.currentIndexChanged.connect(self._on_eq_preset_changed)
 
+        self.surround_cb = QCheckBox(_tr("7.1 Surround"))
+        self.surround_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.surround_cb.toggled.connect(self._on_surround_toggled)
+
+        self.surround_test_btn = QPushButton(_tr("Test 7.1"))
+        self.surround_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.surround_test_btn.setEnabled(False)
+        self.surround_test_btn.clicked.connect(self.ctrl.play_surround_test)
+
+        surround_row = QHBoxLayout()
+        surround_row.setSpacing(8)
+        surround_row.addWidget(self.surround_cb)
+        surround_row.addStretch()
+        surround_row.addWidget(self.surround_test_btn)
+
         preset_row = QHBoxLayout()
         preset_row.setSpacing(10)
         preset_row.addWidget(self._row_label(_tr("Preset:")))
@@ -1439,6 +624,7 @@ class VirtuosoGUI(QMainWindow):
 
         card.body.setSpacing(6)
         card.body.addLayout(preset_row)
+        card.body.addLayout(surround_row)
         card.body.addWidget(self.eq_sliders_container)
         return card
 
@@ -1628,13 +814,16 @@ class VirtuosoGUI(QMainWindow):
         # Bloquear señales durante la carga
         for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
-                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider,
-                  self.eq_enable_cb):
+                  self.side_v2w_radio, self.vol_slider, self.mic_vol_slider,
+                  self.rgb_slider, self.mic_slider, self.rgb_effect_combo,
+                  self.rgb_speed_combo, self.eq_enable_cb, self.surround_cb):
             w.blockSignals(True)
 
         self.side_toggle.setChecked(s.value("sidetone_muted", False, type=bool))
         self.side_slider.setValue(s.value("sidetone_level", 70, type=int))
         self.vol_slider.setValue(s.value("volume", 70, type=int))
+        self.mic_vol_slider.setValue(s.value("mic_volume", 100, type=int))
+        self.mic_vol_label.setText(f"{self.mic_vol_slider.value()}%")
 
         if s.value("sidetone_v2w", False, type=bool):
             self.side_v2w_radio.setChecked(True)
@@ -1715,15 +904,31 @@ class VirtuosoGUI(QMainWindow):
         self.eq_sliders_container.setVisible(eq_expanded)
         self.eq_toggle_btn.setText("▾" if eq_expanded else "▸")
 
-        # Equalizer enabled
+        # RGB Effect & Speed
+        eff = s.value("rgb_effect", "Static", type=str)
+        e_idx = self.rgb_effect_combo.findData(eff)
+        if e_idx >= 0:
+            self.rgb_effect_combo.setCurrentIndex(e_idx)
+        spd = s.value("rgb_effect_speed", 1.0, type=float)
+        sp_idx = self.rgb_speed_combo.findData(spd)
+        if sp_idx >= 0:
+            self.rgb_speed_combo.setCurrentIndex(sp_idx)
+        self.rgb_speed_combo.setEnabled(eff in ("Rainbow", "ColorPulse", "ColorShift"))
+
+        # Equalizer & Surround enabled
         eq_enabled = s.value("eq_enabled", False, type=bool)
         self.eq_enable_cb.setChecked(eq_enabled)
+        surround_enabled = s.value("surround_enabled", False, type=bool)
+        self.surround_cb.setChecked(surround_enabled)
+        if hasattr(self, "surround_test_btn"):
+            self.surround_test_btn.setEnabled(surround_enabled)
 
         # Desbloquear señales
         for w in (self.side_toggle, self.mic_tone_cb, self.side_exit_cb,
                   self.side_slider, self.side_alsa_radio,
-                  self.side_v2w_radio, self.vol_slider, self.rgb_slider, self.mic_slider,
-                  self.eq_enable_cb):
+                  self.side_v2w_radio, self.vol_slider, self.mic_vol_slider,
+                  self.rgb_slider, self.mic_slider, self.rgb_effect_combo,
+                  self.rgb_speed_combo, self.eq_enable_cb, self.surround_cb):
             w.blockSignals(False)
 
     def _save_settings(self):
@@ -1734,6 +939,7 @@ class VirtuosoGUI(QMainWindow):
         s.setValue("mic_tone", self.mic_tone_cb.isChecked())
         s.setValue("sidetone_off_on_exit", self.side_exit_cb.isChecked())
         s.setValue("mic_brightness", self.mic_slider.value())
+        s.setValue("mic_volume", self.mic_vol_slider.value())
 
         s.setValue("sidetone_muted", self.side_toggle.isChecked())
         s.setValue("sidetone_level", self.side_slider.value())
@@ -1741,16 +947,25 @@ class VirtuosoGUI(QMainWindow):
         s.setValue("volume", self.vol_slider.value())
         s.setValue("rgb_color", self._current_color.name())
         s.setValue("rgb_brightness", self.rgb_slider.value())
+        s.setValue("rgb_effect", self.rgb_effect_combo.currentData())
+        s.setValue("rgb_effect_speed", self.rgb_speed_combo.currentData())
         s.setValue("sleep_timer", self.sleep_combo.currentData())
         s.setValue("eq_preset", self.eq_preset_combo.currentData())
         s.setValue("eq_expanded", self.eq_sliders_container.isVisible())
         s.setValue("eq_enabled", self.eq_enable_cb.isChecked())
+        s.setValue("surround_enabled", self.surround_cb.isChecked())
 
     def _reapply_all_settings(self):
         """Re-applies all saved settings to the hardware.
         Called on initial connect and after every successful reconnection."""
-        # RGB
+        # Hardware sleep timer (SleepMode_StoreInDevice)
+        mins = self.sleep_combo.currentData()
+        if mins is not None and "Wired" not in self.ctrl.connection_mode:
+            self.ctrl.set_sleep_timer(mins)
+
+        # RGB & Dynamic effect timer
         self.apply_rgb()
+        self._update_rgb_effect_timer()
 
         # Sidetone
         if self.side_toggle.isChecked():
@@ -1767,14 +982,19 @@ class VirtuosoGUI(QMainWindow):
     def _apply_saved_settings(self):
         """Aplica las preferencias cargadas al hardware.
         Se llama después de _try_initial_connect()."""
-        self.keep_alive_timer.start(20_000)
+        self.keep_alive_timer.start(25_000)
         self._sync_mic_from_pw()  # before RGB, so the LED starts correct
-        self._sync_volume_from_os()  # sync volume from OS on start
+        self._sync_volume_from_os()  # sync volume and mic gain from OS on start
         if self._hid_connected:
             self._reapply_all_settings()
-        if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+        eq_on = hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked()
+        surr_on = hasattr(self, "surround_cb") and self.surround_cb.isChecked()
+        self.ctrl.eq.eq_enabled = eq_on
+        self.ctrl.eq.surround_enabled = surr_on
+        if eq_on or surr_on:
             gains = [s.value() / 10.0 for s in self.eq_sliders]
-            self.ctrl.enable_eq(True, gains)
+            self.ctrl.enable_eq(eq_on, gains)
+            self._sync_volume_from_os()
 
     # ─── Conexión HID ────────────────────────────────────────────────
 
@@ -1803,12 +1023,16 @@ class VirtuosoGUI(QMainWindow):
         """Enables/disables everything that needs a live V2W link."""
         for w in (self.batt_btn, self.mic_color_btn, self.mic_slider,
                   self.rgb_color_btn, self.rgb_slider, self.mic_mute_color_btn,
+                  self.rgb_effect_combo, self.rgb_speed_combo,
                   self.profile_btn_1, self.profile_btn_2, self.profile_btn_3,
                   self.save_profile_btn, self.sleep_combo, self.quick_lighting_combo):
             try:
                 w.setEnabled(enabled)
             except Exception:
                 pass
+        if enabled:
+            eff = self.rgb_effect_combo.currentData()
+            self.rgb_speed_combo.setEnabled(eff in ("Rainbow", "ColorPulse", "ColorShift"))
 
     def _update_status(self, connected):
         if connected:
@@ -1829,7 +1053,7 @@ class VirtuosoGUI(QMainWindow):
             self._set_v2w_controls_enabled(False)
             self._update_battery_display(_tr("Not connected"))
 
-    # ─── Sleep Timer & Quick Colors Handlers ─────────────────────────
+    # ─── Hardware Sleep Timer & Quick Colors Handlers ────────────────
 
     def _on_sleep_timer_changed(self, index):
         mins = self.sleep_combo.currentData()
@@ -1837,86 +1061,6 @@ class VirtuosoGUI(QMainWindow):
             self.ctrl.set_sleep_timer(mins)
             s = QSettings("VirtuosoControl", "VirtuosoControl")
             s.setValue("sleep_timer", mins)
-            self.sleep_inactivity_seconds = 0
-            if mins == 0 and self.is_sleeping:
-                self._wake_up_headset()
-
-    def _check_inactivity(self):
-        if not self._hid_connected or "Wired" in self.ctrl.connection_mode:
-            return
-
-        mins = self.sleep_combo.currentData()
-        if mins is None or mins <= 0:
-            self.sleep_inactivity_seconds = 0
-            if self.is_sleeping:
-                self._wake_up_headset()
-            return
-
-        timeout_sec = mins * 60
-        audio_active = self.ctrl.is_audio_active()
-        screen_locked = self.ctrl.is_screen_locked()
-
-        if audio_active:
-            self.sleep_inactivity_seconds = 0
-            if self.is_sleeping:
-                self._wake_up_headset()
-            self._was_screen_locked = screen_locked
-            return
-
-        # No audio currently playing to the headset
-        self.sleep_inactivity_seconds += 5
-
-        if not self.is_sleeping and self.sleep_inactivity_seconds >= timeout_sec:
-            self._put_headset_to_sleep()
-        elif self.is_sleeping:
-            # Wake triggers (NEVER call is_headset_alive() here as that sends RF packets):
-            # 1. Screen unlocked (transition from locked to unlocked)
-            # 2. Passive event pushed by headset (physical button press or power toggle)
-            unlocked_transition = getattr(self, "_was_screen_locked", False) and not screen_locked
-            passive_event = self.ctrl.check_passive_wakeup()
-            if unlocked_transition or passive_event:
-                self._wake_up_headset()
-
-        self._was_screen_locked = screen_locked
-
-    def _put_headset_to_sleep(self):
-        if self.is_sleeping:
-            return
-        self.is_sleeping = True
-        self.keep_alive_timer.stop()
-        self.battery_timer.stop()
-        self.ctrl.enter_standby_sleep()
-        dev_name = self.ctrl.get_device_name()
-        self._set_status(f"{dev_name} · {_tr('Standby (Sleeping)')}", "text_muted")
-        if hasattr(self, "tray_icon") and self.tray_icon:
-            self.tray_icon.setToolTip(f"Virtuoso Control - {_tr('Standby (Sleeping)')}")
-
-    def _wake_up_headset(self):
-        if not self.is_sleeping:
-            return
-        self.is_sleeping = False
-        self.sleep_inactivity_seconds = 0
-        self.ctrl.wake_from_standby_sleep()
-        mins = self.sleep_combo.currentData()
-        if mins is not None:
-            self.ctrl.set_sleep_timer(mins)
-        self.keep_alive_timer.start(20_000)
-        self.battery_timer.start(300_000)
-        self._reapply_all_settings()
-        self._update_status(True)
-        if hasattr(self, "tray_icon") and self.tray_icon:
-            self.tray_icon.setToolTip("Virtuoso Control - Conectado")
-
-    def eventFilter(self, watched, event):
-        if getattr(self, "is_sleeping", False):
-            if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
-                self._wake_up_headset()
-        return super().eventFilter(watched, event)
-
-    def mousePressEvent(self, event):
-        if getattr(self, "is_sleeping", False):
-            self._wake_up_headset()
-        super().mousePressEvent(event)
 
     def _on_quick_lighting_selected(self, index):
         color_hex = self.quick_lighting_combo.currentData()
@@ -1925,22 +1069,55 @@ class VirtuosoGUI(QMainWindow):
         col = QColor(color_hex)
         self._current_color = col
         self.rgb_color_btn.set_color(col)
+        # Switch back to Static when picking an explicit solid quick color
+        static_idx = self.rgb_effect_combo.findData("Static")
+        if static_idx >= 0:
+            self.rgb_effect_combo.blockSignals(True)
+            self.rgb_effect_combo.setCurrentIndex(static_idx)
+            self.rgb_effect_combo.blockSignals(False)
+            self.rgb_speed_combo.setEnabled(False)
+        self._update_rgb_effect_timer()
         self.apply_rgb()
         self._save_settings()
         self.quick_lighting_combo.blockSignals(True)
         self.quick_lighting_combo.setCurrentIndex(0)
         self.quick_lighting_combo.blockSignals(False)
 
-    # ─── Equalizer Handlers ──────────────────────────────────────────
+    # ─── Equalizer & Surround Handlers ───────────────────────────────
+
+    def _run_dsp_transition(self, fn):
+        """Runs a DSP toggle safely: cancels stale slider debounce and blocks re-entrant clicks."""
+        if hasattr(self, "eq_apply_timer"):
+            self.eq_apply_timer.stop()
+        widgets = [w for w in (getattr(self, "eq_enable_cb", None),
+                               getattr(self, "surround_cb", None)) if w is not None]
+        for w in widgets:
+            w.setEnabled(False)
+        try:
+            return fn()
+        finally:
+            for w in widgets:
+                w.setEnabled(True)
+
+    def _on_surround_toggled(self, checked):
+        s = QSettings("VirtuosoControl", "VirtuosoControl")
+        s.setValue("surround_enabled", checked)
+        if hasattr(self, "surround_test_btn"):
+            self.surround_test_btn.setEnabled(checked)
+        self._run_dsp_transition(lambda: self.ctrl.enable_surround(checked))
+        self._sync_volume_from_os()
+        if getattr(self, "_voice_prompts", True):
+            self.ctrl.play_sound("SurroundOn" if checked else "SurroundOff")
 
     def _on_eq_enabled_toggled(self, checked):
         s = QSettings("VirtuosoControl", "VirtuosoControl")
         s.setValue("eq_enabled", checked)
-        gains = [s.value() / 10.0 for s in self.eq_sliders]
-        self.ctrl.enable_eq(checked, gains)
+        gains = [sl.value() / 10.0 for sl in self.eq_sliders]
+        self._run_dsp_transition(lambda: self.ctrl.enable_eq(checked, gains))
+        self._sync_volume_from_os()
 
     def _apply_current_eq(self):
-        gains = [s.value() / 10.0 for s in self.eq_sliders]
+        gains = [sl.value() / 10.0 for sl in self.eq_sliders]
         s = QSettings("VirtuosoControl", "VirtuosoControl")
         s.setValue("eq_preset", "Custom")
         s.setValue("eq_custom_gains", gains)
@@ -1970,6 +1147,8 @@ class VirtuosoGUI(QMainWindow):
                 except Exception:
                     pass
 
+            if hasattr(self, "eq_apply_timer"):
+                self.eq_apply_timer.stop()
             s = QSettings("VirtuosoControl", "VirtuosoControl")
             s.setValue("eq_preset", preset_name)
             if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
@@ -2017,8 +1196,11 @@ class VirtuosoGUI(QMainWindow):
 
     def _on_connection_lost(self):
         self._hid_connected = False
+        self.ctrl.reset_session_state()
         self._update_status(False)
         self.keep_alive_timer.stop()
+        if hasattr(self, "rgb_effect_timer"):
+            self.rgb_effect_timer.stop()
         if not self.reconnect_timer.isActive():
             self.reconnect_timer.start(3000)
 
@@ -2036,51 +1218,62 @@ class VirtuosoGUI(QMainWindow):
             self._hid_connected = True
             self._update_status(True)
             self.reconnect_timer.stop()
-            self.keep_alive_timer.start(20_000)
+            self.keep_alive_timer.start(25_000)
             self._reapply_all_settings()
             self._initial_battery_check()
 
+    def _recover_software_mode(self):
+        """Re-enters Software Mode and restores all RGB/Brightness/Sleep settings after hardware reset or wake."""
+        self.ctrl.reset_session_state()
+        if self.ctrl._ensure_handshake():
+            self._reapply_all_settings()
+            return True
+        return False
+
     # ─── LED del micrófono ─────────────────────────────────────────
 
-
-
     def do_keep_alive(self):
-        if not self._hid_connected or getattr(self, "is_sleeping", False):
+        if not self._hid_connected:
             return
 
         # In wired mode, V2W heartbeat and queries are unsupported
         if "Wired" in self.ctrl.connection_mode:
             return
 
-        # This sequence ensures that the connection is not lost after 5 minutes.
+        # Check current operating mode (1=Hardware, 2=Software, None=unresponsive)
+        # Running every 25s keeps the headset safely under its 60s firmware watchdog,
+        # and immediately recovers Software Mode if the headset woke up from hardware sleep.
         try:
-            # 1. Send the heartbeat first proactively
-            self.ctrl.send_heartbeat()
+            mode = self.ctrl.get_operating_mode()
+            if mode == 1:
+                if self._recover_software_mode():
+                    return
+            elif mode == 2:
+                self.ctrl.send_heartbeat()
+                self.apply_rgb()
+                return
 
-            # 2. Refresh RGB
-            self.apply_rgb()
-
-            # 3. Allow a brief pause (100ms) for the dongle to process the previous steps.
+            # Mode query failed or returned None — verify liveness robustly
             QCoreApplication.processEvents()
             QThread.msleep(100)
 
-            # 4. Robust verification (up to 3 attempts if the dongle is busy)
             headset_alive = False
             for _ in range(3):
                 if self.ctrl.is_headset_alive():
                     headset_alive = True
                     break
-                # If it returned a false negative, wait another 150ms before querying again.
                 QCoreApplication.processEvents()
                 QThread.msleep(150)
 
-            # If it still returns "False" after the 3 spaced-out attempts, then it has indeed disconnected.
             if not headset_alive:
                 self._on_connection_lost()
                 return
 
+            # Alive again after transient miss: ensure software mode & LEDs are active
+            if self.ctrl.get_operating_mode() == 1:
+                self._recover_software_mode()
+
         except Exception:
-            # If any error occurs in the HID communication, safely disconnect.
             self._on_connection_lost()
 
     # ─── Iluminación RGB ─────────────────────────────────────────────
@@ -2093,9 +1286,78 @@ class VirtuosoGUI(QMainWindow):
             self.apply_rgb()
             self._save_settings()
 
+    def _on_rgb_effect_changed(self):
+        eff = self.rgb_effect_combo.currentData()
+        self.rgb_speed_combo.setEnabled(eff in ("Rainbow", "ColorPulse", "ColorShift"))
+        self._update_rgb_effect_timer()
+        self.apply_rgb()
+        self._save_settings()
+
+    def _update_rgb_effect_timer(self):
+        eff = self.rgb_effect_combo.currentData() if hasattr(self, "rgb_effect_combo") else "Static"
+        should_run = (
+            self._hid_connected
+            and "Wired" not in self.ctrl.connection_mode
+            and self.rgb_slider.value() > 0
+            and eff in ("Rainbow", "ColorPulse", "ColorShift")
+        )
+        if should_run:
+            if not self.rgb_effect_timer.isActive():
+                self.rgb_effect_timer.start(65)
+        else:
+            if self.rgb_effect_timer.isActive():
+                self.rgb_effect_timer.stop()
+
+    def _tick_rgb_effect(self):
+        speed = float(self.rgb_speed_combo.currentData() or 1.0)
+        self._effect_phase = (self._effect_phase + 0.025 * speed) % 1.0
+        self.apply_rgb()
+
+    def _compute_logo_rgb(self):
+        eff = self.rgb_effect_combo.currentData() if hasattr(self, "rgb_effect_combo") else "Static"
+        if eff == "Rainbow":
+            col = QColor.fromHsvF(self._effect_phase, 1.0, 1.0)
+            return (col.red(), col.green(), col.blue())
+        if eff == "ColorPulse":
+            pulse = 0.15 + 0.85 * (0.5 - 0.5 * math.cos(2 * math.pi * self._effect_phase))
+            return (
+                int(self._current_color.red() * pulse),
+                int(self._current_color.green() * pulse),
+                int(self._current_color.blue() * pulse),
+            )
+        if eff == "ColorShift":
+            # Smoothly cycle between user's chosen color and its complementary/accent hue
+            h0 = self._current_color.hsvHueF()
+            if h0 < 0:
+                h0 = 0.0
+            h1 = (h0 + 0.5) % 1.0
+            t = 0.5 - 0.5 * math.cos(2 * math.pi * self._effect_phase)
+            c0 = QColor.fromHsvF(h0, max(0.7, self._current_color.hsvSaturationF()), 1.0)
+            c1 = QColor.fromHsvF(h1, 1.0, 1.0)
+            return (
+                int(c0.red() * (1 - t) + c1.red() * t),
+                int(c0.green() * (1 - t) + c1.green() * t),
+                int(c0.blue() * (1 - t) + c1.blue() * t),
+            )
+        if eff == "Battery":
+            p = self._last_battery_percent
+            if p is None:
+                return (self._current_color.red(), self._current_color.green(), self._current_color.blue())
+            if self._last_charging:
+                return (60, 150, 255)
+            if p >= BATT_LEVEL["HIGH"]:
+                return (0, 255, 80)
+            if p >= BATT_LEVEL["MEDIUM"]:
+                return (255, 220, 0)
+            if p >= BATT_LEVEL["LOW"]:
+                return (255, 110, 0)
+            return (255, 0, 0)
+        return (self._current_color.red(), self._current_color.green(), self._current_color.blue())
+
     def change_rgb(self, value):
         self.rgb_label.setText(f"{self.rgb_slider.value()}%")
         self.mic_label.setText(f"{self.mic_slider.value()}%")
+        self._update_rgb_effect_timer()
         self.apply_rgb()
         self._save_settings()
 
@@ -2198,8 +1460,9 @@ class VirtuosoGUI(QMainWindow):
                     mic_brightness = self.mic_slider.value()
             # -----------------------------------------------
 
+            logo_rgb = self._compute_logo_rgb()
             self.ctrl.set_all_rgb(
-                (self._current_color.red(), self._current_color.green(), self._current_color.blue()),
+                logo_rgb,
                 rgb_brightness,
                 mic_rgb,
                 mic_brightness,
@@ -2256,10 +1519,11 @@ class VirtuosoGUI(QMainWindow):
         if not self._hid_connected:
             return
         presses = self.ctrl.poll_mic_button()
+        if self.ctrl.consume_hw_reset_event():
+            if self.ctrl.get_operating_mode() == 1:
+                self._recover_software_mode()
         if presses % 2 == 0:
             return  # no presses, or an even number that cancels out
-        if getattr(self, "is_sleeping", False):
-            self._wake_up_headset()
         self._apply_mic_mute(not self._mic_muted)
 
     def _apply_mic_mute(self, muted):
@@ -2330,7 +1594,12 @@ class VirtuosoGUI(QMainWindow):
             self._apply_sidetone(value)
         self._save_settings()
 
-    # ─── Volume ──────────────────────────────────────────────────────
+    # ─── Volume & Mic Gain ───────────────────────────────────────────
+
+    def change_mic_volume(self, value):
+        self.mic_vol_label.setText(f"{value}%")
+        self.ctrl.set_mic_volume_pw(value)
+        self._save_settings()
 
     def change_volume(self, value):
         self.vol_label.setText(f"{value}%")
@@ -2338,24 +1607,60 @@ class VirtuosoGUI(QMainWindow):
         self._save_settings()
 
     def _sync_volume_from_os(self):
-        """Synchronizes the volume slider if changed outside the app (OS / headset wheel)."""
-        if self.vol_slider.isSliderDown() or getattr(self, "is_sleeping", False):
-            return
-        vol = self.ctrl.get_volume()
-        if vol is not None and vol != self.vol_slider.value():
-            self.vol_slider.blockSignals(True)
-            self.vol_slider.setValue(vol)
-            self.vol_slider.blockSignals(False)
-            self.vol_label.setText(f"{vol}%")
-            self._save_settings()
+        """Synchronizes output volume, mic gain sliders, and routes new app streams through DSP."""
+        if self.ctrl.eq.is_enabled:
+            self.ctrl.route_eq_streams()
+        if not self.vol_slider.isSliderDown():
+            vol = self.ctrl.get_volume()
+            if vol is not None and vol != self.vol_slider.value():
+                self.vol_slider.blockSignals(True)
+                self.vol_slider.setValue(vol)
+                self.vol_slider.blockSignals(False)
+                self.vol_label.setText(f"{vol}%")
+                self._save_settings()
+
+        if hasattr(self, "mic_vol_slider") and not self.mic_vol_slider.isSliderDown():
+            mvol = self.ctrl.get_mic_volume_pw()
+            if mvol is not None and mvol != self.mic_vol_slider.value():
+                self.mic_vol_slider.blockSignals(True)
+                self.mic_vol_slider.setValue(mvol)
+                self.mic_vol_slider.blockSignals(False)
+                self.mic_vol_label.setText(f"{mvol}%")
+                self._save_settings()
+
+    # ─── Voice Prompt Reminders ──────────────────────────────────────
+
+    def _configure_reminder_timers(self):
+        s = QSettings("AlejandroSocas", "VirtuosoControl")
+        lb_sec = s.value("low_battery_reminder_sec", 0, type=int)
+        mm_sec = s.value("mic_mute_reminder_sec", 0, type=int)
+        if lb_sec > 0:
+            self.low_batt_remind_timer.start(lb_sec * 1000)
+        else:
+            self.low_batt_remind_timer.stop()
+        if mm_sec > 0:
+            self.mic_mute_remind_timer.start(mm_sec * 1000)
+        else:
+            self.mic_mute_remind_timer.stop()
+
+    def _on_low_batt_reminder(self):
+        if (self._hid_connected and getattr(self, "_voice_prompts", True)
+                and not self._last_charging
+                and self._last_battery_percent is not None
+                and self._last_battery_percent < BATT_LEVEL["LOW"]):
+            sound = "BatteryCritical" if self._last_battery_percent < BATT_LEVEL["NOTIFY_LOW"] else "BatteryLow"
+            self.ctrl.play_sound(sound)
+
+    def _on_mic_mute_reminder(self):
+        if self._hid_connected and getattr(self, "_voice_prompts", True) and self._mic_muted:
+            self.ctrl.play_sound("MicOff")
 
     # ─── Battery ─────────────────────────────────────────────────────
 
     def check_battery(self):
         """Queries battery and updates UI + tray."""
-        if not self._hid_connected or getattr(self, "is_sleeping", False):
-            if not self._hid_connected:
-                self._update_battery_display(_tr("Not connected"))
+        if not self._hid_connected:
+            self._update_battery_display(_tr("Not connected"))
             return
         battery_str = self.ctrl.get_battery()
         # Translate the status part of the battery string
@@ -2373,7 +1678,7 @@ class VirtuosoGUI(QMainWindow):
         Skipped in wired mode, where _update_status() has already put
         "N/A (Wired)" in the label and the V2W battery query is unsupported.
         """
-        if not self._hid_connected or getattr(self, "is_sleeping", False):
+        if not self._hid_connected:
             return
         if "Wired" in self.ctrl.connection_mode:
             return
@@ -2382,7 +1687,7 @@ class VirtuosoGUI(QMainWindow):
     def _auto_battery_check(self):
         """Periodic auto-check. Only if handshake is done
         (to avoid triggering handshake and turning off the LED accidentally)."""
-        if self._hid_connected and self.ctrl._handshake_done and not getattr(self, "is_sleeping", False):
+        if self._hid_connected and self.ctrl._handshake_done:
             # Smart Battery Polling: 
             # If battery is low (<15%) and not physically charging, skip polling to avoid beeps.
             if self._last_battery_percent is not None and self._last_battery_percent < BATT_LEVEL["NOTIFY_LOW"]:
@@ -2545,13 +1850,19 @@ class VirtuosoGUI(QMainWindow):
             self.volume_sync_timer.stop()
         if hasattr(self, "blink_timer"):
             self.blink_timer.stop()
-        if hasattr(self, "inactivity_timer"):
-            self.inactivity_timer.stop()
         if hasattr(self, "eq_apply_timer"):
             self.eq_apply_timer.stop()
+        if hasattr(self, "rgb_effect_timer"):
+            self.rgb_effect_timer.stop()
+        if hasattr(self, "low_batt_remind_timer"):
+            self.low_batt_remind_timer.stop()
+        if hasattr(self, "mic_mute_remind_timer"):
+            self.mic_mute_remind_timer.stop()
 
-        # Restore direct hardware sink if EQ was running
-        if hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked():
+        # Restore direct hardware sink if EQ or Surround was running
+        if ((hasattr(self, "eq_enable_cb") and self.eq_enable_cb.isChecked())
+                or (hasattr(self, "surround_cb") and self.surround_cb.isChecked())):
+            self.ctrl.eq.surround_enabled = False
             self.ctrl.enable_eq(False)
 
         # Sidetone is a mixer setting: it survives the app. Turn it off on the
